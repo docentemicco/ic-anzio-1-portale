@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="it">
+
 <head>
   <meta charset="UTF-8">
 
@@ -15,55 +16,23 @@
 
   <title>I.C. Anzio I - Portale scolastico</title>
 
-  <!--
-    =====================================================
-    STILI DEL PORTALE
-    =====================================================
-  -->
-
   <link
     rel="stylesheet"
-    href="style.css"
+    href="styles.css"
   >
 
 </head>
 
 <body>
 
-  <!--
-    =====================================================
-    CONTENITORE PRINCIPALE
-
-    Tutte le pagine vengono generate da app.js
-    all'interno di questo elemento.
-    =====================================================
-  -->
-
   <div id="app"></div>
 
-
-  <!--
-    =====================================================
-    SUPABASE
-
-    DEVE ESSERE CARICATO PRIMA DI app.js
-    =====================================================
-  -->
-
+  <!-- Supabase deve essere caricato prima di app.js -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-<script src="app.js"></script>
-
-
-  <!--
-    =====================================================
-    APPLICAZIONE
-    =====================================================
-  -->
-
-  <script
-    src="app.js"
-  ></script>
+  <!-- Applicazione: una sola volta -->
+  <script src="app.js"></script>
 
 </body>
+
 </html>
