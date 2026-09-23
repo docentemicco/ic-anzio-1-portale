@@ -1,15 +1,69 @@
-<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>I.C. Anzio I — Test operativo</title><link rel="stylesheet" href="styles.css"><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="supabase-config.js"></script>
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
 
-<style>
-.status-badge{display:inline-block;padding:5px 10px;border-radius:999px;font-size:12px;font-weight:700;margin-right:8px}
-.status-badge.ok{background:#dff4e5;color:#176b36}
-.status-badge.warn{background:#fff0cf;color:#875b00}
-.status-badge.pending{background:#e8eef7;color:#41566f}
-.verification-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid #e6e6e6}
-.verification-row:last-child{border-bottom:0}
-.verification-main{min-width:0}
-.verification-meta{font-size:12px;opacity:.7;margin-top:4px}
-.verification-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-</style>
-</head><body><div id="app"></div><script src="app.js?v=40"></script></body></html>
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
+  <meta
+    name="description"
+    content="Portale scolastico I.C. Anzio I"
+  >
+
+  <title>I.C. Anzio I - Portale scolastico</title>
+
+  <!--
+    =====================================================
+    STILI DEL PORTALE
+    =====================================================
+  -->
+
+  <link
+    rel="stylesheet"
+    href="style.css"
+  >
+
+</head>
+
+<body>
+
+  <!--
+    =====================================================
+    CONTENITORE PRINCIPALE
+
+    Tutte le pagine vengono generate da app.js
+    all'interno di questo elemento.
+    =====================================================
+  -->
+
+  <div id="app"></div>
+
+
+  <!--
+    =====================================================
+    SUPABASE
+
+    DEVE ESSERE CARICATO PRIMA DI app.js
+    =====================================================
+  -->
+
+  <script
+    src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"
+  ></script>
+
+
+  <!--
+    =====================================================
+    APPLICAZIONE
+    =====================================================
+  -->
+
+  <script
+    src="app.js"
+  ></script>
+
+</body>
+</html>
