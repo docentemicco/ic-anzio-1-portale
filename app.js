@@ -28,7 +28,7 @@ function ensureDemoUsers(){
 // ensureDemoUsers(); // v24: users are managed by Supabase Auth
 const orders=["Infanzia","Primaria","Secondaria di I grado"],campuses=["Plesso Centrale","Succursale","Quartiere Europa","Saragat"];
 function save(){localStorage.setItem(KEY,JSON.stringify(db))}
-function header(){return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V39</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${state.user?.display||""}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
+function header(){return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V41</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${state.user?.display||""}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
 function render(){
   if(!state.role){app.innerHTML=header()+login();return}
   if(state.user?.must_change_password && state.page!=="password") state.page="password";
@@ -195,6 +195,7 @@ async function doLogin(e,area){
    m.style.display="block"; return;
  }
  state.user=profile;
+ state.user.display=[profile.first_name,profile.last_name].filter(Boolean).join(" ")||profile.username;
  state.role=profile.role;
  state.page="home";
  state.student=null;
@@ -205,8 +206,7 @@ async function doLogin(e,area){
  render();
 }
 
-async function restoreSession(){
- const client=window.supabaseClient;
+async function restoreSession(){  const client=window.supabaseClient;
  if(!client)return;
  const {data}=await client.auth.getSession();
  if(!data?.session)return;
@@ -214,6 +214,7 @@ async function restoreSession(){
  const {data:profile}=await client.from("user_profiles").select("*").eq("id",uid).single();
  if(profile){
    state.user=profile;
+   state.user.display=[profile.first_name,profile.last_name].filter(Boolean).join(" ")||profile.username;
    state.role=profile.role;
    state.authUser=data.session.user;
    state.page="home";
@@ -413,7 +414,7 @@ function familyStudent(){
   <div class="card"><b>🍽️ Dieta / indicazioni alimentari</b><br>${s.diet||"—"}</div>
   <div class="card"><b>🚌 Trasporto</b><br>${s.transport}</div>
   <div class="card"><b>🚌 Note trasporto</b><br>${s.transportNote||"—"}</div>
-  <div class="card"><b>📄 Documentazione</b><br>${s.docsInfo||"Nessuna indicazione"}</div>
+    <div class="card"><b>📄 Documentazione</b><br>${s.docsInfo||"Nessuna indicazione"}</div>
   <div class="card"><b>📝 Note</b><br>${s.note||"—"}</div>
  </div></div>`;
 }
@@ -426,15 +427,15 @@ function formatEarly(items){
  return a.map(e=>typeof e==='string'?e:`<div style="margin:6px 0"><b>${e.type||"—"}</b> · ${e.date||"—"} ${e.time||""}<br>Persona autorizzata: ${e.person||"—"}</div>`).join('');
 }
 function openFamilyStudent(id){
- const s=db.students.find(x=>x.id===id);
+ const s=db.students.find(x=>String(x.id)===String(id));
  if(!s){alert("Scheda alunno non trovata.");return;}
- if(state.role!=="family" || !(state.user.children||[]).includes(id)){alert("Non hai accesso a questa scheda.");return;}
+ if(state.role!=="family" || !(state.user.children||[]).map(String).includes(String(id))){alert("Non hai accesso a questa scheda.");return;}
  state.familyStudent=s; state.page="familyStudent"; render();
 }
 function editFamilyChild(id){
- const s=db.students.find(x=>x.id===id);
+ const s=db.students.find(x=>String(x.id)===String(id));
  if(!s){alert("Scheda alunno non trovata.");return;}
- if(state.role!=="family" || !(state.user.children||[]).includes(id)){alert("Non hai accesso a questa scheda.");return;}
+ if(state.role!=="family" || !(state.user.children||[]).map(String).includes(String(id))){alert("Non hai accesso a questa scheda.");return;}
  state.familyStudent=s;
  state.page="familyEdit";
  render();
@@ -447,7 +448,7 @@ function renderFamilyEdit(){
  const meds=(s.medications||[]);
  return `<div class="section"><button class="btn" onclick="openFamilyStudent(\'${s.id}\')">← Scheda figlio</button><h2>✏️ Aggiorna informazioni — ${s.name}</h2>
  <p class="muted">Le modifiche saranno nuovamente inviate alla scuola e lo stato tornerà a “Da verificare”.</p>
- <form onsubmit="updateFamilyChild(event,${s.id})"><div class="formgrid">
+ <form onsubmit="updateFamilyChild(event,'${s.id}')"><div class="formgrid">
   <div class="field"><label>Nome</label><input id="ef_n" value="${s.name.split(" ")[0]||""}" required></div>
   <div class="field"><label>Cognome</label><input id="ef_c" value="${s.name.split(" ").slice(1).join(" ")||""}" required></div>
   <div class="field"><label>Ordine</label><select id="ef_o">${orders.map(x=>`<option ${x===s.order?"selected":""}>${x}</option>`).join("")}</select></div>
