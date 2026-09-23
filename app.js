@@ -1,831 +1,2982 @@
-const KEY="anzio1_test_v11";
-const DEFAULT_PASSWORD="Anzio2026";
-let db=JSON.parse(localStorage.getItem(KEY)||'{"students":[],"documents":[],"users":[]}');
-let state={role:null,page:"home",student:null,user:null};
-function ensureDemoUsers(){
-  if(!Array.isArray(db.users)) db.users=[];
-  const demo=[
-    {username:"admin",display:"Amministratore",role:"admin"},
-    {username:"mario.rossi",display:"Mario Rossi",role:"teacher"},
-    {username:"anna.bianchi",display:"Anna Bianchi",role:"teacher"},
-    {username:"luca.rossi",display:"Luca Rossi",role:"family",children:[]},
-    {username:"giulia.verdi",display:"Giulia Verdi",role:"family",children:[]}
-  ];
-  demo.forEach(d=>{
-    let u=db.users.find(x=>x.username===d.username);
-    if(!u){
-      u={...d,password:DEFAULT_PASSWORD,mustChange:true};
-      db.users.push(u);
-    }else{
-      u.role=d.role; u.display=d.display;
-      if(d.role==="family" && !Array.isArray(u.children))u.children=[];
-      if(!u.password){u.password=DEFAULT_PASSWORD;u.mustChange=true;}
+/* =========================================================
+   I.C. ANZIO I
+   PORTALE TEST OPERATIVO
+   VERSIONE UNIFICATA
+   ========================================================= */
+
+const SUPABASE_URL = "https://vnpzhhpkymfxxajvvxtj.supabase.co";
+const SUPABASE_KEY = "sb_publishable_qIq-kTzwKFl7YWyWUyZVTA_v_AN386T";
+
+const supabase = window.supabase.createClient(
+  SUPABASE_URL,
+  SUPABASE_KEY
+);
+
+const DEFAULT_PASSWORD = "Anzio2026";
+
+const emailMap = {
+  "admin": "admin@ic-anzio-i.test",
+  "mario.rossi": "mario.rossi@ic-anzio-i.test",
+  "anna.bianchi": "anna.bianchi@ic-anzio-i.test",
+  "luca.rossi": "luca.rossi@ic-anzio-i.test",
+  "giulia.verdi": "giulia.verdi@ic-anzio-i.test"
+};
+
+const state = {
+  role: null,
+  page: "home",
+  user: null,
+  authUser: null,
+  students: [],
+  delegates: [],
+  earlyExits: [],
+  medications: [],
+  orders: [],
+  campuses: [],
+  classes: [],
+  selectedStudent: null,
+  verificationStudent: null,
+  message: null
+};
+
+
+/* =========================================================
+   UTILITY
+   ========================================================= */
+
+function esc(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function formatDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("it-IT");
+}
+
+function showMessage(text, type = "success") {
+  state.message = { text, type };
+  render();
+
+  setTimeout(() => {
+    state.message = null;
+    render();
+  }, 3000);
+}
+
+function displayName(profile) {
+  if (!profile) return "Utente";
+
+  const fullName = [
+    profile.first_name,
+    profile.last_name
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
+  return (
+    fullName ||
+    profile.username ||
+    profile.email ||
+    state.authUser?.email ||
+    "Utente"
+  );
+}
+
+function roleLabel(role) {
+  if (role === "admin") return "👑 Amministratore";
+  if (role === "teacher") return "👩‍🏫 Docente";
+  if (role === "family") return "👨‍👩‍👧 Famiglia";
+  return role || "";
+}
+
+function statusClass(status) {
+  if (status === "Approvato") return "status-approved";
+  if (status === "Da integrare") return "status-warning";
+  if (status === "Scaduto") return "status-expired";
+  return "status-pending";
+}
+
+
+/* =========================================================
+   AUTH
+   ========================================================= */
+
+async function doLogin() {
+  const username = document.getElementById("loginUsername")?.value
+    ?.trim()
+    .toLowerCase();
+
+  const password = document.getElementById("loginPassword")?.value || "";
+
+  if (!username || !password) {
+    showMessage("Inserisci username e password.", "error");
+    return;
+  }
+
+  const email = emailMap[username];
+
+  if (!email) {
+    showMessage("Utente non presente nell'ambiente di test.", "error");
+    return;
+  }
+
+  const { data, error } =
+    await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+
+  if (error) {
+    console.error(error);
+    showMessage("Username o password non corretti.", "error");
+    return;
+  }
+
+  state.authUser = data.user;
+
+  const { data: profile, error: profileError } =
+    await supabase
+      .from("user_profiles")
+      .select("*")
+      .eq("id", data.user.id)
+      .single();
+
+  if (profileError || !profile) {
+    console.error(profileError);
+    await supabase.auth.signOut();
+    showMessage("Profilo utente non trovato.", "error");
+    return;
+  }
+
+  state.user = profile;
+  state.role = profile.role;
+
+  /*
+    Fallback definitivo contro "undefined".
+    Se first_name e last_name sono vuoti,
+    viene utilizzato username.
+  */
+  state.user.display = displayName(profile);
+
+  if (profile.must_change_password) {
+    state.page = "changePassword";
+    render();
+    return;
+  }
+
+  if (state.role === "family") {
+    await syncFamilyFromSupabase();
+  } else {
+    await syncStaffFromSupabase();
+  }
+
+  state.page = "home";
+  render();
+}
+
+async function restoreSession() {
+  const {
+    data: { session }
+  } = await supabase.auth.getSession();
+
+  if (!session?.user) {
+    render();
+    return;
+  }
+
+  state.authUser = session.user;
+
+  const { data: profile, error } =
+    await supabase
+      .from("user_profiles")
+      .select("*")
+      .eq("id", session.user.id)
+      .single();
+
+  if (error || !profile) {
+    await supabase.auth.signOut();
+    render();
+    return;
+  }
+
+  state.user = profile;
+  state.role = profile.role;
+
+  state.user.display = displayName(profile);
+
+  if (profile.must_change_password) {
+    state.page = "changePassword";
+    render();
+    return;
+  }
+
+  if (state.role === "family") {
+    await syncFamilyFromSupabase();
+  } else {
+    await syncStaffFromSupabase();
+  }
+
+  state.page = "home";
+  render();
+}
+
+async function doLogout() {
+  await supabase.auth.signOut();
+
+  state.role = null;
+  state.page = "home";
+  state.user = null;
+  state.authUser = null;
+  state.students = [];
+  state.delegates = [];
+  state.earlyExits = [];
+  state.medications = [];
+  state.orders = [];
+  state.campuses = [];
+  state.classes = [];
+  state.selectedStudent = null;
+  state.verificationStudent = null;
+
+  render();
+}
+
+async function changePassword() {
+  const password1 =
+    document.getElementById("newPassword")?.value || "";
+
+  const password2 =
+    document.getElementById("newPassword2")?.value || "";
+
+  if (!password1 || password1.length < 8) {
+    showMessage(
+      "La nuova password deve contenere almeno 8 caratteri.",
+      "error"
+    );
+    return;
+  }
+
+  if (password1 !== password2) {
+    showMessage("Le due password non coincidono.", "error");
+    return;
+  }
+
+  const { error } =
+    await supabase.auth.updateUser({
+      password: password1
+    });
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore durante il cambio password.",
+      "error"
+    );
+    return;
+  }
+
+  const { error: rpcError } =
+    await supabase.rpc("complete_password_change");
+
+  if (rpcError) {
+    console.error(rpcError);
+  }
+
+  state.user.must_change_password = false;
+
+  if (state.role === "family") {
+    await syncFamilyFromSupabase();
+  } else {
+    await syncStaffFromSupabase();
+  }
+
+  state.page = "home";
+  showMessage("Password modificata correttamente.");
+}
+
+
+/* =========================================================
+   SUPABASE - FAMIGLIA
+   ========================================================= */
+
+async function syncFamilyFromSupabase() {
+  if (!state.authUser) return;
+
+  const { data: students, error } =
+    await supabase
+      .from("students")
+      .select("*")
+      .eq("family_user_id", state.authUser.id)
+      .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error(error);
+    showMessage("Errore nel caricamento dei figli.", "error");
+    return;
+  }
+
+  state.students = students || [];
+
+  const ids = state.students.map(s => s.id);
+
+  state.delegates = [];
+  state.earlyExits = [];
+  state.medications = [];
+
+  if (!ids.length) return;
+
+  const [
+    delegatesResult,
+    earlyResult,
+    medsResult
+  ] = await Promise.all([
+    supabase
+      .from("student_delegates")
+      .select("*")
+      .in("student_id", ids),
+
+    supabase
+      .from("early_exits")
+      .select("*")
+      .in("student_id", ids),
+
+    supabase
+      .from("student_medications")
+      .select("*")
+      .in("student_id", ids)
+  ]);
+
+  if (!delegatesResult.error) {
+    state.delegates = delegatesResult.data || [];
+  }
+
+  if (!earlyResult.error) {
+    state.earlyExits = earlyResult.data || [];
+  }
+
+  if (!medsResult.error) {
+    state.medications = medsResult.data || [];
+  }
+}
+
+
+/* =========================================================
+   SUPABASE - DOCENTI / ADMIN
+   ========================================================= */
+
+async function syncStaffFromSupabase() {
+  const [
+    studentsResult,
+    delegatesResult,
+    earlyResult,
+    medsResult,
+    ordersResult,
+    campusesResult,
+    classesResult
+  ] = await Promise.all([
+    supabase
+      .from("students")
+      .select("*")
+      .order("last_name", { ascending: true }),
+
+    supabase
+      .from("student_delegates")
+      .select("*"),
+
+    supabase
+      .from("early_exits")
+      .select("*"),
+
+    supabase
+      .from("student_medications")
+      .select("*"),
+
+    supabase
+      .from("school_orders")
+      .select("*")
+      .order("name"),
+
+    supabase
+      .from("campuses")
+      .select("*")
+      .order("name"),
+
+    supabase
+      .from("classes")
+      .select("*")
+      .order("name")
+  ]);
+
+  state.students = studentsResult.data || [];
+  state.delegates = delegatesResult.data || [];
+  state.earlyExits = earlyResult.data || [];
+  state.medications = medsResult.data || [];
+  state.orders = ordersResult.data || [];
+  state.campuses = campusesResult.data || [];
+  state.classes = classesResult.data || [];
+}
+
+
+/* =========================================================
+   STUDENT HELPERS
+   ========================================================= */
+
+function studentById(id) {
+  return state.students.find(s => s.id === id);
+}
+
+function studentDelegates(studentId) {
+  return state.delegates.filter(
+    d => d.student_id === studentId
+  );
+}
+
+function studentEarlyExits(studentId) {
+  return state.earlyExits.filter(
+    e => e.student_id === studentId
+  );
+}
+
+function studentMedications(studentId) {
+  return state.medications.filter(
+    m => m.student_id === studentId
+  );
+}
+
+
+/* =========================================================
+   HOME
+   ========================================================= */
+
+function home() {
+  if (state.role === "family") {
+    return `
+      <section class="page">
+        <div class="hero">
+          <h1>Area Famiglie</h1>
+          <p>
+            Benvenuto/a,
+            <strong>${esc(state.user?.display || state.user?.username || "Utente")}</strong>.
+          </p>
+        </div>
+
+        <div class="cards">
+          <div class="card">
+            <div class="card-icon">👨‍👩‍👧</div>
+            <h3>I miei figli</h3>
+            <p>
+              ${state.students.length}
+              ${state.students.length === 1 ? "figlio inserito" : "figli inseriti"}
+              nel tuo account.
+            </p>
+            <button onclick="go('children')">
+              Gestisci figli
+            </button>
+          </div>
+
+          <div class="card">
+            <div class="card-icon">📄</div>
+            <h3>Autorizzazioni</h3>
+            <p>
+              Deleghe, uscite anticipate,
+              documentazione e autorizzazioni.
+            </p>
+            <button onclick="go('children')">
+              Apri
+            </button>
+          </div>
+
+          <div class="card">
+            <div class="card-icon">💊</div>
+            <h3>Farmaci</h3>
+            <p>
+              Gestione delle informazioni relative
+              ai farmaci autorizzati.
+            </p>
+            <button onclick="go('children')">
+              Apri
+            </button>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="page">
+      <div class="hero">
+        <h1>Area ${state.role === "admin" ? "Amministrazione" : "Docenti"}</h1>
+        <p>
+          Benvenuto/a,
+          <strong>${esc(state.user?.display || state.user?.username || "Utente")}</strong>.
+        </p>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <div class="card-icon">👨‍🎓</div>
+          <h3>Alunni</h3>
+          <p>
+            Consulta le schede degli alunni presenti
+            nel sistema.
+          </p>
+          <button onclick="go('students')">
+            Apri alunni
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">✅</div>
+          <h3>Verifiche</h3>
+          <p>
+            Consulta e gestisci lo stato di verifica
+            delle schede.
+          </p>
+          <button onclick="go('verifications')">
+            Apri verifiche
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">📊</div>
+          <h3>Struttura scolastica</h3>
+          <p>
+            Ordini, plessi e classi presenti
+            nell'ambiente di test.
+          </p>
+          <button onclick="go('structure')">
+            Apri
+          </button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+
+/* =========================================================
+   FAMIGLIA - FIGLI
+   ========================================================= */
+
+function childrenPage() {
+  return `
+    <section class="page">
+      <div class="page-head">
+        <div>
+          <h1>I miei figli</h1>
+          <p>
+            Puoi inserire e aggiornare direttamente
+            i dati dei tuoi figli.
+          </p>
+        </div>
+
+        <button onclick="go('addChild')">
+          + Inserisci figlio
+        </button>
+      </div>
+
+      ${
+        state.students.length
+          ? `
+            <div class="student-grid">
+              ${state.students.map(studentCard).join("")}
+            </div>
+          `
+          : `
+            <div class="empty">
+              <div class="empty-icon">👨‍👩‍👧</div>
+              <h3>Nessun figlio inserito</h3>
+              <p>
+                Inserisci il primo figlio per iniziare.
+              </p>
+              <button onclick="go('addChild')">
+                Inserisci figlio
+              </button>
+            </div>
+          `
+      }
+    </section>
+  `;
+}
+
+function studentCard(s) {
+  const status = s.verification_status || "Da verificare";
+
+  return `
+    <div class="student-card">
+      <div class="student-avatar">
+        ${(s.first_name || "?").charAt(0).toUpperCase()}
+      </div>
+
+      <div class="student-info">
+        <h3>
+          ${esc(s.first_name)} ${esc(s.last_name)}
+        </h3>
+
+        <p>
+          Classe:
+          ${esc(s.class_name || s.class || "—")}
+        </p>
+
+        <p>
+          Plesso:
+          ${esc(s.campus_name || s.campus || "—")}
+        </p>
+
+        <span class="status ${statusClass(status)}">
+          ${esc(status)}
+        </span>
+      </div>
+
+      <div class="student-actions">
+        <button onclick="openFamilyStudent('${s.id}')">
+          Apri scheda
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+
+/* =========================================================
+   NUOVO FIGLIO
+   ========================================================= */
+
+function addChildPage() {
+  return `
+    <section class="page">
+      <div class="page-head">
+        <div>
+          <h1>Inserisci figlio</h1>
+          <p>
+            Inserisci i dati principali dell'alunno.
+          </p>
+        </div>
+      </div>
+
+      <form onsubmit="saveFamilyChild(event)" class="form-card">
+
+        <div class="form-grid">
+
+          <label>
+            Nome
+            <input
+              id="childFirstName"
+              required
+            />
+          </label>
+
+          <label>
+            Cognome
+            <input
+              id="childLastName"
+              required
+            />
+          </label>
+
+          <label>
+            Data di nascita
+            <input
+              id="childDob"
+              type="date"
+            />
+          </label>
+
+          <label>
+            Anno scolastico
+            <input
+              id="childSchoolYear"
+              value="2026/2027"
+            />
+          </label>
+
+          <label>
+            Ordine
+            <select id="childOrder">
+              <option value="">Seleziona</option>
+              <option value="Infanzia">Infanzia</option>
+              <option value="Primaria">Primaria</option>
+              <option value="Secondaria di I grado">
+                Secondaria di I grado
+              </option>
+            </select>
+          </label>
+
+          <label>
+            Plesso
+            <select id="childCampus">
+              <option value="">Seleziona</option>
+              <option value="Plesso Centrale">
+                Plesso Centrale
+              </option>
+              <option value="Succursale">
+                Succursale
+              </option>
+              <option value="Quartiere Europa">
+                Quartiere Europa
+              </option>
+              <option value="Saragat">
+                Saragat
+              </option>
+            </select>
+          </label>
+
+          <label>
+            Classe
+            <input
+              id="childClass"
+              placeholder="Es. 4A"
+            />
+          </label>
+
+          <label>
+            Mensa
+            <select id="childMensa">
+              <option value="">Seleziona</option>
+              <option value="Si">Si</option>
+              <option value="No">No</option>
+            </select>
+          </label>
+
+          <label>
+            Pasto da casa
+            <select id="childHomeMeal">
+              <option value="">Seleziona</option>
+              <option value="Si">Si</option>
+              <option value="No">No</option>
+            </select>
+          </label>
+
+          <label>
+            Trasporto
+            <select id="childTransport">
+              <option value="">Seleziona</option>
+              <option value="Si">Si</option>
+              <option value="No">No</option>
+            </select>
+          </label>
+
+        </div>
+
+        <h2>Allergie</h2>
+
+        <div class="form-grid">
+
+          <label>
+            Presenti?
+            <select id="childAllergy">
+              <option value="No">No</option>
+              <option value="Si">Si</option>
+            </select>
+          </label>
+
+          <label>
+            Tipo / categoria
+            <input
+              id="childAllergyType"
+            />
+          </label>
+
+          <label class="full">
+            Note operative
+            <textarea
+              id="childAllergyNotes"
+            ></textarea>
+          </label>
+
+        </div>
+
+        <div class="form-actions">
+          <button
+            type="button"
+            class="secondary"
+            onclick="go('children')"
+          >
+            Annulla
+          </button>
+
+          <button type="submit">
+            Salva figlio
+          </button>
+        </div>
+
+      </form>
+    </section>
+  `;
+}
+
+async function saveFamilyChild(event) {
+  event.preventDefault();
+
+  if (!state.authUser) return;
+
+  const payload = {
+    first_name:
+      document.getElementById("childFirstName")?.value.trim(),
+
+    last_name:
+      document.getElementById("childLastName")?.value.trim(),
+
+    dob:
+      document.getElementById("childDob")?.value || null,
+
+    school_year:
+      document.getElementById("childSchoolYear")?.value.trim() ||
+      "2026/2027",
+
+    order_name:
+      document.getElementById("childOrder")?.value || null,
+
+    campus_name:
+      document.getElementById("childCampus")?.value || null,
+
+    class_name:
+      document.getElementById("childClass")?.value.trim() || null,
+
+    mensa:
+      document.getElementById("childMensa")?.value || null,
+
+    home_meal:
+      document.getElementById("childHomeMeal")?.value || null,
+
+    transport:
+      document.getElementById("childTransport")?.value || null,
+
+    allergy:
+      document.getElementById("childAllergy")?.value || "No",
+
+    allergy_type:
+      document.getElementById("childAllergyType")?.value.trim() ||
+      null,
+
+    allergy_notes:
+      document.getElementById("childAllergyNotes")?.value.trim() ||
+      null,
+
+    family_user_id: state.authUser.id,
+    family_submitted: true,
+    verification_status: "Da verificare"
+  };
+
+  if (!payload.first_name || !payload.last_name) {
+    showMessage(
+      "Nome e cognome sono obbligatori.",
+      "error"
+    );
+    return;
+  }
+
+  const { error } =
+    await supabase
+      .from("students")
+      .insert(payload);
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore durante il salvataggio del figlio.",
+      "error"
+    );
+    return;
+  }
+
+  await syncFamilyFromSupabase();
+
+  state.page = "children";
+
+  showMessage("Figlio inserito correttamente.");
+}
+
+
+/* =========================================================
+   SCHEDA FIGLIO - FAMIGLIA
+   ========================================================= */
+
+function openFamilyStudent(id) {
+  const student = studentById(id);
+
+  if (!student) {
+    showMessage("Alunno non trovato.", "error");
+    return;
+  }
+
+  state.selectedStudent = student;
+  state.page = "familyStudent";
+  render();
+}
+
+function familyStudentPage() {
+  const s = state.selectedStudent;
+
+  if (!s) {
+    state.page = "children";
+    return "";
+  }
+
+  const delegates = studentDelegates(s.id);
+  const early = studentEarlyExits(s.id);
+  const meds = studentMedications(s.id);
+
+  return `
+    <section class="page">
+
+      <div class="page-head">
+        <div>
+          <button
+            class="back"
+            onclick="go('children')"
+          >
+            ← Torna ai figli
+          </button>
+
+          <h1>
+            ${esc(s.first_name)}
+            ${esc(s.last_name)}
+          </h1>
+
+          <p>
+            Scheda alunno
+          </p>
+        </div>
+
+        <span class="status ${statusClass(
+          s.verification_status || "Da verificare"
+        )}">
+          ${esc(s.verification_status || "Da verificare")}
+        </span>
+      </div>
+
+
+      <!-- ANAGRAFICA -->
+
+      <div class="section-card">
+
+        <h2>👤 Anagrafica</h2>
+
+        <div class="detail-grid">
+
+          <div>
+            <strong>Nome</strong>
+            <span>${esc(s.first_name)}</span>
+          </div>
+
+          <div>
+            <strong>Cognome</strong>
+            <span>${esc(s.last_name)}</span>
+          </div>
+
+          <div>
+            <strong>Data di nascita</strong>
+            <span>${esc(formatDate(s.dob) || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Anno scolastico</strong>
+            <span>${esc(s.school_year || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Ordine</strong>
+            <span>${esc(s.order_name || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Plesso</strong>
+            <span>${esc(s.campus_name || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Classe</strong>
+            <span>${esc(s.class_name || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Mensa</strong>
+            <span>${esc(s.mensa || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Pasto da casa</strong>
+            <span>${esc(s.home_meal || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Trasporto</strong>
+            <span>${esc(s.transport || "—")}</span>
+          </div>
+
+        </div>
+
+        <button
+          onclick="editFamilyStudent('${s.id}')"
+        >
+          Modifica scheda
+        </button>
+
+      </div>
+
+
+      <!-- ALLERGIE -->
+
+      <div class="section-card">
+
+        <h2>🟠 Allergie / informazioni importanti</h2>
+
+        <p>
+          <strong>Presenza:</strong>
+          ${esc(s.allergy || "No")}
+        </p>
+
+        <p>
+          <strong>Tipo:</strong>
+          ${esc(s.allergy_type || "—")}
+        </p>
+
+        <p>
+          <strong>Note operative:</strong>
+          ${esc(s.allergy_notes || "—")}
+        </p>
+
+      </div>
+
+
+      <!-- DELEGHE -->
+
+      <div class="section-card">
+
+        <div class="section-title-row">
+          <h2>👥 Deleghe per l'uscita</h2>
+
+          <button
+            onclick="addDelegate('${s.id}')"
+          >
+            + Aggiungi delega
+          </button>
+        </div>
+
+        ${
+          delegates.length
+            ? delegates.map(delegateCard).join("")
+            : `
+              <div class="empty-small">
+                Nessuna delega inserita.
+              </div>
+            `
+        }
+
+      </div>
+
+
+      <!-- USCITE ANTICIPATE -->
+
+      <div class="section-card">
+
+        <div class="section-title-row">
+          <h2>🚪 Uscite anticipate</h2>
+
+          <button
+            onclick="addEarlyExit('${s.id}')"
+          >
+            + Aggiungi uscita
+          </button>
+        </div>
+
+        ${
+          early.length
+            ? early.map(earlyExitCard).join("")
+            : `
+              <div class="empty-small">
+                Nessuna uscita anticipata inserita.
+              </div>
+            `
+        }
+
+      </div>
+
+
+      <!-- FARMACI -->
+
+      <div class="section-card sensitive">
+
+        <div class="section-title-row">
+          <h2>🔴 Farmaci</h2>
+
+          <button
+            onclick="addMedication('${s.id}')"
+          >
+            + Aggiungi farmaco
+          </button>
+        </div>
+
+        <p class="sensitive-note">
+          Informazioni sensibili. Utilizzare esclusivamente
+          per la gestione scolastica autorizzata.
+        </p>
+
+        ${
+          meds.length
+            ? meds.map(medicationCard).join("")
+            : `
+              <div class="empty-small">
+                Nessun farmaco inserito.
+              </div>
+            `
+        }
+
+      </div>
+
+    </section>
+  `;
+}
+
+
+/* =========================================================
+   MODIFICA SCHEDA
+   ========================================================= */
+
+function editFamilyStudent(id) {
+  const s = studentById(id);
+
+  if (!s) return;
+
+  state.selectedStudent = s;
+  state.page = "editStudent";
+  render();
+}
+
+function editStudentPage() {
+  const s = state.selectedStudent;
+
+  if (!s) {
+    state.page = "children";
+    return "";
+  }
+
+  return `
+    <section class="page">
+
+      <div class="page-head">
+        <div>
+          <button
+            class="back"
+            onclick="openFamilyStudent('${s.id}')"
+          >
+            ← Torna alla scheda
+          </button>
+
+          <h1>Modifica scheda</h1>
+
+          <p>
+            ${esc(s.first_name)}
+            ${esc(s.last_name)}
+          </p>
+        </div>
+      </div>
+
+
+      <form
+        onsubmit="updateFamilyStudent(event)"
+        class="form-card"
+      >
+
+        <div class="form-grid">
+
+          <label>
+            Nome
+            <input
+              id="editFirstName"
+              value="${esc(s.first_name)}"
+              required
+            />
+          </label>
+
+          <label>
+            Cognome
+            <input
+              id="editLastName"
+              value="${esc(s.last_name)}"
+              required
+            />
+          </label>
+
+          <label>
+            Data di nascita
+            <input
+              id="editDob"
+              type="date"
+              value="${esc(s.dob || "")}"
+            />
+          </label>
+
+          <label>
+            Anno scolastico
+            <input
+              id="editSchoolYear"
+              value="${esc(s.school_year || "2026/2027")}"
+            />
+          </label>
+
+          <label>
+            Ordine
+            <select id="editOrder">
+              ${option("Infanzia", s.order_name)}
+              ${option("Primaria", s.order_name)}
+              ${option(
+                "Secondaria di I grado",
+                s.order_name
+              )}
+            </select>
+          </label>
+
+          <label>
+            Plesso
+            <select id="editCampus">
+              ${option(
+                "Plesso Centrale",
+                s.campus_name
+              )}
+              ${option(
+                "Succursale",
+                s.campus_name
+              )}
+              ${option(
+                "Quartiere Europa",
+                s.campus_name
+              )}
+              ${option(
+                "Saragat",
+                s.campus_name
+              )}
+            </select>
+          </label>
+
+          <label>
+            Classe
+            <input
+              id="editClass"
+              value="${esc(s.class_name || "")}"
+            />
+          </label>
+
+          <label>
+            Mensa
+            <select id="editMensa">
+              ${option("Si", s.mensa)}
+              ${option("No", s.mensa)}
+            </select>
+          </label>
+
+          <label>
+            Pasto da casa
+            <select id="editHomeMeal">
+              ${option("Si", s.home_meal)}
+              ${option("No", s.home_meal)}
+            </select>
+          </label>
+
+          <label>
+            Trasporto
+            <select id="editTransport">
+              ${option("Si", s.transport)}
+              ${option("No", s.transport)}
+            </select>
+          </label>
+
+        </div>
+
+
+        <h2>Allergie</h2>
+
+        <div class="form-grid">
+
+          <label>
+            Presenti?
+            <select id="editAllergy">
+              ${option("No", s.allergy)}
+              ${option("Si", s.allergy)}
+            </select>
+          </label>
+
+          <label>
+            Tipo / categoria
+            <input
+              id="editAllergyType"
+              value="${esc(s.allergy_type || "")}"
+            />
+          </label>
+
+          <label class="full">
+            Note operative
+            <textarea
+              id="editAllergyNotes"
+            >${esc(s.allergy_notes || "")}</textarea>
+          </label>
+
+        </div>
+
+
+        <div class="form-actions">
+
+          <button
+            type="button"
+            class="secondary"
+            onclick="openFamilyStudent('${s.id}')"
+          >
+            Annulla
+          </button>
+
+          <button type="submit">
+            Salva modifiche
+          </button>
+
+        </div>
+
+      </form>
+    </section>
+  `;
+}
+
+function option(value, selected) {
+  return `
+    <option
+      value="${esc(value)}"
+      ${value === selected ? "selected" : ""}
+    >
+      ${esc(value)}
+    </option>
+  `;
+}
+
+async function updateFamilyStudent(event) {
+  event.preventDefault();
+
+  const s = state.selectedStudent;
+
+  if (!s) return;
+
+  const payload = {
+    first_name:
+      document.getElementById("editFirstName")?.value.trim(),
+
+    last_name:
+      document.getElementById("editLastName")?.value.trim(),
+
+    dob:
+      document.getElementById("editDob")?.value || null,
+
+    school_year:
+      document.getElementById("editSchoolYear")?.value.trim(),
+
+    order_name:
+      document.getElementById("editOrder")?.value || null,
+
+    campus_name:
+      document.getElementById("editCampus")?.value || null,
+
+    class_name:
+      document.getElementById("editClass")?.value.trim() || null,
+
+    mensa:
+      document.getElementById("editMensa")?.value || null,
+
+    home_meal:
+      document.getElementById("editHomeMeal")?.value || null,
+
+    transport:
+      document.getElementById("editTransport")?.value || null,
+
+    allergy:
+      document.getElementById("editAllergy")?.value || "No",
+
+    allergy_type:
+      document.getElementById("editAllergyType")?.value.trim() ||
+      null,
+
+    allergy_notes:
+      document.getElementById("editAllergyNotes")?.value.trim() ||
+      null
+  };
+
+  const { error } =
+    await supabase
+      .from("students")
+      .update(payload)
+      .eq("id", s.id)
+      .eq("family_user_id", state.authUser.id);
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore durante la modifica della scheda.",
+      "error"
+    );
+    return;
+  }
+
+  await syncFamilyFromSupabase();
+
+  state.selectedStudent = studentById(s.id);
+
+  state.page = "familyStudent";
+
+  showMessage("Scheda aggiornata correttamente.");
+}
+
+
+/* =========================================================
+   DELEGHE
+   ========================================================= */
+
+function delegateCard(d) {
+  return `
+    <div class="item-card">
+
+      <div>
+        <strong>${esc(d.full_name || d.name || "Delegato")}</strong>
+
+        <p>
+          Rapporto:
+          ${esc(d.relationship || "—")}
+        </p>
+
+        <p>
+          Validità:
+          ${esc(d.valid_from || "—")}
+          →
+          ${esc(d.valid_to || "—")}
+        </p>
+
+        <p>
+          Documento:
+          ${esc(d.document_details || "—")}
+        </p>
+      </div>
+
+      <button
+        class="danger-outline"
+        onclick="deleteDelegate('${d.id}')"
+      >
+        Elimina
+      </button>
+
+    </div>
+  `;
+}
+
+async function addDelegate(studentId) {
+  const name = prompt("Nome e cognome del delegato:");
+
+  if (!name) return;
+
+  const relationship =
+    prompt("Rapporto con l'alunno:") || "";
+
+  const documentDetails =
+    prompt("Documento di identità / estremi:") || "";
+
+  const validTo =
+    prompt("Data di scadenza della delega (AAAA-MM-GG):") || null;
+
+  const { error } =
+    await supabase
+      .from("student_delegates")
+      .insert({
+        student_id: studentId,
+        full_name: name,
+        relationship,
+        document_details: documentDetails,
+        valid_to: validTo,
+        active: true
+      });
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore nel salvataggio della delega.",
+      "error"
+    );
+    return;
+  }
+
+  await syncFamilyFromSupabase();
+  state.selectedStudent = studentById(studentId);
+  render();
+
+  showMessage("Delega inserita.");
+}
+
+async function deleteDelegate(id) {
+  if (!confirm("Vuoi eliminare questa delega?")) return;
+
+  const { error } =
+    await supabase
+      .from("student_delegates")
+      .delete()
+      .eq("id", id);
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore durante l'eliminazione.",
+      "error"
+    );
+    return;
+  }
+
+  await syncFamilyFromSupabase();
+
+  if (state.selectedStudent) {
+    state.selectedStudent =
+      studentById(state.selectedStudent.id);
+  }
+
+  render();
+
+  showMessage("Delega eliminata.");
+}
+
+
+/* =========================================================
+   USCITE ANTICIPATE
+   ========================================================= */
+
+function earlyExitCard(e) {
+  return `
+    <div class="item-card">
+
+      <div>
+        <strong>
+          ${esc(e.exit_date || "Data non indicata")}
+          ${e.exit_time ? " · " + esc(e.exit_time) : ""}
+        </strong>
+
+        <p>
+          Tipologia:
+          ${esc(e.type || "Occasionale")}
+        </p>
+
+        <p>
+          Persona autorizzata:
+          ${esc(e.authorized_person || "—")}
+        </p>
+
+        <p>
+          Validità:
+          ${esc(e.valid_from || "—")}
+          →
+          ${esc(e.valid_to || "—")}
+        </p>
+      </div>
+
+      <button
+        class="danger-outline"
+        onclick="deleteEarlyExit('${e.id}')"
+      >
+        Elimina
+      </button>
+
+    </div>
+  `;
+}
+
+async function addEarlyExit(studentId) {
+  const date =
+    prompt("Data dell'uscita (AAAA-MM-GG):");
+
+  if (!date) return;
+
+  const time =
+    prompt("Ora dell'uscita:") || "";
+
+  const type =
+    prompt("Tipologia (Occasionale / Ricorrente):") ||
+    "Occasionale";
+
+  const person =
+    prompt("Persona autorizzata al ritiro:") ||
+    "";
+
+  const { error } =
+    await supabase
+      .from("early_exits")
+      .insert({
+        student_id: studentId,
+        exit_date: date,
+        exit_time: time,
+        type,
+        authorized_person: person
+      });
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore nel salvataggio dell'uscita.",
+      "error"
+    );
+    return;
+  }
+
+  await syncFamilyFromSupabase();
+
+  state.selectedStudent =
+    studentById(studentId);
+
+  render();
+
+  showMessage("Uscita anticipata inserita.");
+}
+
+async function deleteEarlyExit(id) {
+  if (!confirm("Vuoi eliminare questa uscita?")) return;
+
+  const { error } =
+    await supabase
+      .from("early_exits")
+      .delete()
+      .eq("id", id);
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore durante l'eliminazione.",
+      "error"
+    );
+    return;
+  }
+
+  await syncFamilyFromSupabase();
+
+  if (state.selectedStudent) {
+    state.selectedStudent =
+      studentById(state.selectedStudent.id);
+  }
+
+  render();
+
+  showMessage("Uscita eliminata.");
+}
+
+
+/* =========================================================
+   FARMACI
+   ========================================================= */
+
+function medicationCard(m) {
+  return `
+    <div class="item-card sensitive-item">
+
+      <div>
+
+        <strong>
+          ${esc(m.medication_name || m.name || "Farmaco")}
+        </strong>
+
+        <p>
+          Dose:
+          ${esc(m.dose || "—")}
+        </p>
+
+        <p>
+          Quando:
+          ${esc(m.schedule || m.when || "—")}
+        </p>
+
+        <p>
+          Modalità:
+          ${esc(m.method || "—")}
+        </p>
+
+        <p>
+          Somministrato a scuola:
+          ${esc(m.administered_at_school || m.administered_at_school === false
+            ? (m.administered_at_school ? "Si" : "No")
+            : "—")}
+        </p>
+
+        <p>
+          Validità autorizzazione:
+          ${esc(m.authorization_valid_to || "—")}
+        </p>
+
+        <p>
+          Istruzioni:
+          ${esc(m.instructions || "—")}
+        </p>
+
+      </div>
+
+      <div class="item-actions">
+
+        <button
+          onclick="editMedication('${m.id}')"
+        >
+          Modifica
+        </button>
+
+        <button
+          class="danger-outline"
+          onclick="deleteMedication('${m.id}')"
+        >
+          Elimina
+        </button>
+
+      </div>
+
+    </div>
+  `;
+}
+
+async function addMedication(studentId) {
+  const name =
+    prompt("Nome del farmaco:");
+
+  if (!name) return;
+
+  const dose =
+    prompt("Dose:");
+
+  const schedule =
+    prompt("Quando / orario:");
+
+  const method =
+    prompt("Modalità di somministrazione:");
+
+  const administered =
+    confirm("Il farmaco deve essere somministrato a scuola?");
+
+  const validity =
+    prompt(
+      "Validità autorizzazione (AAAA-MM-GG), se presente:"
+    ) || null;
+
+  const instructions =
+    prompt("Istruzioni operative:") || "";
+
+  const { error } =
+    await supabase
+      .from("student_medications")
+      .insert({
+        student_id: studentId,
+        medication_name: name,
+        dose: dose || "",
+        schedule: schedule || "",
+        method: method || "",
+        administered_at_school: administered,
+        authorization_valid_to: validity,
+        instructions
+      });
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore nel salvataggio del farmaco.",
+      "error"
+    );
+    return;
+  }
+
+  await syncFamilyFromSupabase();
+
+  state.selectedStudent =
+    studentById(studentId);
+
+  render();
+
+  showMessage("Farmaco inserito correttamente.");
+}
+
+async function editMedication(id) {
+  const medication =
+    state.medications.find(m => m.id === id);
+
+  if (!medication) return;
+
+  const name =
+    prompt(
+      "Nome del farmaco:",
+      medication.medication_name || ""
+    );
+
+  if (!name) return;
+
+  const dose =
+    prompt(
+      "Dose:",
+      medication.dose || ""
+    );
+
+  const schedule =
+    prompt(
+      "Quando / orario:",
+      medication.schedule || ""
+    );
+
+  const method =
+    prompt(
+      "Modalità:",
+      medication.method || ""
+    );
+
+  const validity =
+    prompt(
+      "Validità autorizzazione:",
+      medication.authorization_valid_to || ""
+    );
+
+  const instructions =
+    prompt(
+      "Istruzioni operative:",
+      medication.instructions || ""
+    );
+
+  const { error } =
+    await supabase
+      .from("student_medications")
+      .update({
+        medication_name: name,
+        dose: dose || "",
+        schedule: schedule || "",
+        method: method || "",
+        authorization_valid_to:
+          validity || null,
+        instructions: instructions || ""
+      })
+      .eq("id", id);
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore durante la modifica del farmaco.",
+      "error"
+    );
+    return;
+  }
+
+  await syncFamilyFromSupabase();
+
+  if (state.selectedStudent) {
+    state.selectedStudent =
+      studentById(state.selectedStudent.id);
+  }
+
+  render();
+
+  showMessage("Farmaco modificato.");
+}
+
+async function deleteMedication(id) {
+  if (!confirm("Vuoi eliminare questo farmaco?")) return;
+
+  const { error } =
+    await supabase
+      .from("student_medications")
+      .delete()
+      .eq("id", id);
+
+  if (error) {
+    console.error(error);
+    showMessage(
+      "Errore durante l'eliminazione del farmaco.",
+      "error"
+    );
+    return;
+  }
+
+  await syncFamilyFromSupabase();
+
+  if (state.selectedStudent) {
+    state.selectedStudent =
+      studentById(state.selectedStudent.id);
+  }
+
+  render();
+
+  showMessage("Farmaco eliminato.");
+}
+
+
+/* =========================================================
+   DOCENTI - ALUNNI
+   ========================================================= */
+
+function studentsPage() {
+  return `
+    <section class="page">
+
+      <div class="page-head">
+
+        <div>
+          <h1>Alunni</h1>
+          <p>
+            Elenco degli alunni presenti nel sistema.
+          </p>
+        </div>
+
+        <input
+          id="studentSearch"
+          class="search"
+          placeholder="Cerca alunno..."
+          oninput="filterStudents()"
+        />
+
+      </div>
+
+      <div id="studentsList">
+        ${staffStudentRows(state.students)}
+      </div>
+
+    </section>
+  `;
+}
+
+function staffStudentRows(list) {
+  if (!list.length) {
+    return `
+      <div class="empty">
+        Nessun alunno trovato.
+      </div>
+    `;
+  }
+
+  return `
+    <div class="table-card">
+
+      <table>
+
+        <thead>
+          <tr>
+            <th>Alunno</th>
+            <th>Classe</th>
+            <th>Plesso</th>
+            <th>Stato</th>
+            <th></th>
+          </tr>
+        </thead>
+
+        <tbody>
+
+          ${list.map(s => `
+            <tr>
+
+              <td>
+                <strong>
+                  ${esc(s.first_name)}
+                  ${esc(s.last_name)}
+                </strong>
+              </td>
+
+              <td>
+                ${esc(s.class_name || "—")}
+              </td>
+
+              <td>
+                ${esc(s.campus_name || "—")}
+              </td>
+
+              <td>
+                <span class="status ${statusClass(
+                  s.verification_status ||
+                  "Da verificare"
+                )}">
+                  ${esc(
+                    s.verification_status ||
+                    "Da verificare"
+                  )}
+                </span>
+              </td>
+
+              <td>
+                <button
+                  onclick="openStaffStudent('${s.id}')"
+                >
+                  Apri
+                </button>
+              </td>
+
+            </tr>
+          `).join("")}
+
+        </tbody>
+
+      </table>
+
+    </div>
+  `;
+}
+
+function filterStudents() {
+  const term =
+    document.getElementById("studentSearch")
+      ?.value
+      ?.trim()
+      .toLowerCase() || "";
+
+  const filtered =
+    state.students.filter(s => {
+
+      const text = [
+        s.first_name,
+        s.last_name,
+        s.class_name,
+        s.campus_name,
+        s.order_name
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return text.includes(term);
+    });
+
+  const container =
+    document.getElementById("studentsList");
+
+  if (container) {
+    container.innerHTML =
+      staffStudentRows(filtered);
+  }
+}
+
+function openStaffStudent(id) {
+  const student = studentById(id);
+
+  if (!student) {
+    showMessage("Alunno non trovato.", "error");
+    return;
+  }
+
+  state.selectedStudent = student;
+  state.page = "staffStudent";
+  render();
+}
+
+
+/* =========================================================
+   SCHEDA ALUNNO - DOCENTI
+   ========================================================= */
+
+function staffStudentPage() {
+  const s = state.selectedStudent;
+
+  if (!s) {
+    state.page = "students";
+    return "";
+  }
+
+  const delegates = studentDelegates(s.id);
+  const early = studentEarlyExits(s.id);
+  const meds = studentMedications(s.id);
+
+  return `
+    <section class="page">
+
+      <div class="page-head">
+
+        <div>
+
+          <button
+            class="back"
+            onclick="go('students')"
+          >
+            ← Torna agli alunni
+          </button>
+
+          <h1>
+            ${esc(s.first_name)}
+            ${esc(s.last_name)}
+          </h1>
+
+          <p>
+            ${esc(s.class_name || "Classe non indicata")}
+            ·
+            ${esc(s.campus_name || "Plesso non indicato")}
+          </p>
+
+        </div>
+
+        <button
+          onclick="openVerification('${s.id}')"
+        >
+          Verifica questa scheda
+        </button>
+
+      </div>
+
+
+      <div class="section-card">
+
+        <h2>👤 Anagrafica</h2>
+
+        <div class="detail-grid">
+
+          <div>
+            <strong>Nome</strong>
+            <span>${esc(s.first_name)}</span>
+          </div>
+
+          <div>
+            <strong>Cognome</strong>
+            <span>${esc(s.last_name)}</span>
+          </div>
+
+          <div>
+            <strong>Data di nascita</strong>
+            <span>${esc(formatDate(s.dob) || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Anno scolastico</strong>
+            <span>${esc(s.school_year || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Ordine</strong>
+            <span>${esc(s.order_name || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Plesso</strong>
+            <span>${esc(s.campus_name || "—")}</span>
+          </div>
+
+          <div>
+            <strong>Classe</strong>
+            <span>${esc(s.class_name || "—")}</span>
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <div class="section-card">
+
+        <h2>🟢 Informazioni operative</h2>
+
+        <p>
+          <strong>Mensa:</strong>
+          ${esc(s.mensa || "—")}
+        </p>
+
+        <p>
+          <strong>Pasto da casa:</strong>
+          ${esc(s.home_meal || "—")}
+        </p>
+
+        <p>
+          <strong>Trasporto:</strong>
+          ${esc(s.transport || "—")}
+        </p>
+
+      </div>
+
+
+      <div class="section-card warning-card">
+
+        <h2>🟠 Allergie / informazioni importanti</h2>
+
+        <p>
+          <strong>Presenza:</strong>
+          ${esc(s.allergy || "No")}
+        </p>
+
+        <p>
+          <strong>Tipo:</strong>
+          ${esc(s.allergy_type || "—")}
+        </p>
+
+        <p>
+          <strong>Note operative:</strong>
+          ${esc(s.allergy_notes || "—")}
+        </p>
+
+      </div>
+
+
+      <div class="section-card">
+
+        <h2>👥 Deleghe</h2>
+
+        ${
+          delegates.length
+            ? delegates.map(delegateCard).join("")
+            : `<p>Nessuna delega presente.</p>`
+        }
+
+      </div>
+
+
+      <div class="section-card">
+
+        <h2>🚪 Uscite anticipate</h2>
+
+        ${
+          early.length
+            ? early.map(earlyExitCard).join("")
+            : `<p>Nessuna uscita anticipata presente.</p>`
+        }
+
+      </div>
+
+
+      <div class="section-card sensitive">
+
+        <h2>🔴 Farmaci</h2>
+
+        <p class="sensitive-note">
+          Area riservata alle informazioni sensibili.
+        </p>
+
+        ${
+          meds.length
+            ? meds.map(medicationCard).join("")
+            : `<p>Nessun farmaco presente.</p>`
+        }
+
+      </div>
+
+    </section>
+  `;
+}
+
+
+/* =========================================================
+   VERIFICHE
+   ========================================================= */
+
+function verificationsPage() {
+  const students =
+    [...state.students].sort((a, b) =>
+      (a.last_name || "")
+        .localeCompare(b.last_name || "")
+    );
+
+  return `
+    <section class="page">
+
+      <div class="page-head">
+
+        <div>
+          <h1>Verifiche</h1>
+          <p>
+            Stato di verifica delle schede degli alunni.
+          </p>
+        </div>
+
+      </div>
+
+      <div class="table-card">
+
+        <table>
+
+          <thead>
+            <tr>
+              <th>Alunno</th>
+              <th>Classe</th>
+              <th>Stato</th>
+              <th></th>
+            </tr>
+          </thead>
+
+          <tbody>
+
+            ${
+              students.length
+                ? students.map(s => `
+                    <tr>
+
+                      <td>
+                        <strong>
+                          ${esc(s.first_name)}
+                          ${esc(s.last_name)}
+                        </strong>
+                      </td>
+
+                      <td>
+                        ${esc(s.class_name || "—")}
+                      </td>
+
+                      <td>
+                        <span class="status ${statusClass(
+                          s.verification_status ||
+                          "Da verificare"
+                        )}">
+                          ${esc(
+                            s.verification_status ||
+                            "Da verificare"
+                          )}
+                        </span>
+                      </td>
+
+                      <td>
+                        <button
+                          onclick="openVerification('${s.id}')"
+                        >
+                          Apri e verifica
+                        </button>
+                      </td>
+
+                    </tr>
+                  `).join("")
+                : `
+                  <tr>
+                    <td colspan="4">
+                      Nessun alunno presente.
+                    </td>
+                  </tr>
+                `
+            }
+
+          </tbody>
+
+        </table>
+
+      </div>
+
+    </section>
+  `;
+}
+
+function openVerification(id) {
+  const student = studentById(id);
+
+  if (!student) {
+    showMessage("Alunno non trovato.", "error");
+    return;
+  }
+
+  state.verificationStudent = student;
+  state.page = "verificationDetail";
+  render();
+}
+
+function verificationDetailPage() {
+  const s = state.verificationStudent;
+
+  if (!s) {
+    state.page = "verifications";
+    return "";
+  }
+
+  return `
+    <section class="page">
+
+      <div class="page-head">
+
+        <div>
+
+          <button
+            class="back"
+            onclick="go('verifications')"
+          >
+            ← Torna alle verifiche
+          </button>
+
+          <h1>
+            Verifica scheda
+          </h1>
+
+          <p>
+            ${esc(s.first_name)}
+            ${esc(s.last_name)}
+          </p>
+
+        </div>
+
+      </div>
+
+
+      <div class="verification-card">
+
+        <div class="verification-summary">
+
+          <h2>
+            ${esc(s.first_name)}
+            ${esc(s.last_name)}
+          </h2>
+
+          <p>
+            Classe:
+            <strong>
+              ${esc(s.class_name || "—")}
+            </strong>
+          </p>
+
+          <p>
+            Plesso:
+            <strong>
+              ${esc(s.campus_name || "—")}
+            </strong>
+          </p>
+
+          <p>
+            Stato attuale:
+            <span class="status ${statusClass(
+              s.verification_status ||
+              "Da verificare"
+            )}">
+              ${esc(
+                s.verification_status ||
+                "Da verificare"
+              )}
+            </span>
+          </p>
+
+        </div>
+
+
+        <form
+          onsubmit="saveVerification(event)"
+        >
+
+          <label>
+            Esito della verifica
+
+            <select
+              id="verificationStatus"
+              required
+            >
+              ${option(
+                "Da verificare",
+                s.verification_status ||
+                "Da verificare"
+              )}
+
+              ${option(
+                "Approvato",
+                s.verification_status
+              )}
+
+              ${option(
+                "Da integrare",
+                s.verification_status
+              )}
+
+              ${option(
+                "Scaduto",
+                s.verification_status
+              )}
+            </select>
+
+          </label>
+
+
+          <label>
+            Note della verifica
+
+            <textarea
+              id="verificationNote"
+              placeholder="Inserisci eventuali note..."
+            >${esc(s.verification_note || "")}</textarea>
+
+          </label>
+
+
+          <div class="form-actions">
+
+            <button
+              type="button"
+              class="secondary"
+              onclick="go('verifications')"
+            >
+              Annulla
+            </button>
+
+            <button type="submit">
+              Salva verifica
+            </button>
+
+          </div>
+
+        </form>
+
+      </div>
+
+    </section>
+  `;
+}
+
+async function saveVerification(event) {
+  event.preventDefault();
+
+  const s = state.verificationStudent;
+
+  if (!s) return;
+
+  const status =
+    document.getElementById(
+      "verificationStatus"
+    )?.value;
+
+  const note =
+    document.getElementById(
+      "verificationNote"
+    )?.value
+    ?.trim() || null;
+
+  if (!status) {
+    showMessage(
+      "Seleziona un esito.",
+      "error"
+    );
+    return;
+  }
+
+  const { error } =
+    await supabase
+      .from("students")
+      .update({
+        verification_status: status,
+        verification_note: note,
+        verified_at:
+          status === "Da verificare"
+            ? null
+            : new Date().toISOString(),
+        verified_by:
+          status === "Da verificare"
+            ? null
+            : state.authUser?.id
+      })
+      .eq("id", s.id);
+
+  if (error) {
+    console.error(error);
+
+    showMessage(
+      "Errore durante il salvataggio della verifica.",
+      "error"
+    );
+
+    return;
+  }
+
+  await syncStaffFromSupabase();
+
+  state.verificationStudent =
+    studentById(s.id);
+
+  state.selectedStudent =
+    studentById(s.id);
+
+  state.page = "verifications";
+
+  render();
+
+  showMessage(
+    "Verifica salvata su Supabase."
+  );
+}
+
+
+/* =========================================================
+   STRUTTURA SCOLASTICA
+   ========================================================= */
+
+function structurePage() {
+  return `
+    <section class="page">
+
+      <div class="page-head">
+
+        <div>
+          <h1>Struttura scolastica</h1>
+          <p>
+            Informazioni presenti nell'ambiente di test.
+          </p>
+        </div>
+
+      </div>
+
+      <div class="cards">
+
+        <div class="card">
+          <div class="card-icon">🏫</div>
+          <h3>Ordini</h3>
+          <p>
+            ${state.orders.length}
+            elementi
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">🏢</div>
+          <h3>Plessi</h3>
+          <p>
+            ${state.campuses.length}
+            elementi
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">📚</div>
+          <h3>Classi</h3>
+          <p>
+            ${state.classes.length}
+            elementi
+          </p>
+        </div>
+
+      </div>
+
+    </section>
+  `;
+}
+
+
+/* =========================================================
+   ROUTING
+   ========================================================= */
+
+function go(page) {
+  state.page = page;
+
+  if (page === "students" ||
+      page === "verifications" ||
+      page === "structure") {
+
+    if (state.role === "family") {
+      state.page = "children";
     }
-  });
-  db.users.forEach(u=>{if(u.role==="family"&&!Array.isArray(u.children))u.children=[];});
-  save();
-}
-// ensureDemoUsers(); // v24: users are managed by Supabase Auth
-const orders=["Infanzia","Primaria","Secondaria di I grado"],campuses=["Plesso Centrale","Succursale","Quartiere Europa","Saragat"];
-function save(){localStorage.setItem(KEY,JSON.stringify(db))}
-function header(){return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V41</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${state.user?.display||""}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
-function render(){
-  if(!state.role){app.innerHTML=header()+login();return}
-  if(state.user?.must_change_password && state.page!=="password") state.page="password";
-  app.innerHTML=header()+`<div class="container"><div class="layout">${side()}<main>${page()}</main></div></div><div class="footer">TEST — autenticazione Supabase. La migrazione completa di tutti i dati da localStorage a Supabase è ancora in corso.</div>`;
-}
-function login(){
- return `<div class="login">
- <h2>Accesso al portale</h2>
- <p class="muted">Scegli l'area di accesso e inserisci le credenziali fornite dalla scuola.</p>
- <div class="choices">
-   <button class="choice" onclick="showLogin('teacher')">
-     <b>👩‍🏫 AREA DOCENTI</b>
-     <span class="muted">Accesso a classi, alunni, documenti e informazioni operative.</span>
-   </button>
-   <button class="choice" onclick="showLogin('family')">
-     <b>👨‍👩‍👧 AREA FAMIGLIE</b>
-     <span class="muted">Accesso ai propri figli e alla documentazione della famiglia.</span>
-   </button>
- </div>
- <div id="loginBox" style="margin-top:18px"></div>
- <div class="section" style="margin-top:18px">
-   <b>Credenziali demo</b><br>
-   Amministratore: <code>admin</code><br>
-   Docenti: <code>mario.rossi</code> · <code>anna.bianchi</code><br>
-   Famiglie: <code>luca.rossi</code> · <code>giulia.verdi</code><br>
-   Password iniziale: <code>${DEFAULT_PASSWORD}</code>
- </div>
- </div>`;
-}
-function showLogin(area){
- const box=document.querySelector("#loginBox");
- const isFamily=area==="family";
- box.innerHTML=`<div class="card">
-   <h3>${isFamily?"👨‍👩‍👧 Accesso Famiglie":"👩‍🏫 Accesso Docenti"}</h3>
-   <form onsubmit="doLogin(event,'${area}')">
-    <div class="field"><label>${isFamily?"Nome utente del figlio":"Nome utente del docente"}</label><input id="loginUser" placeholder="${isFamily?"es. luca.rossi":"es. mario.rossi"}" required></div>
-    <div class="field"><label>Password</label><input id="loginPass" type="password" required></div>
-    <br><button class="btn primary">Accedi all'area ${isFamily?"Famiglie":"Docenti"}</button>
-   </form>
-   <p id="loginMsg" class="danger" style="display:none;margin-top:12px"></p>
- </div>`;
- document.querySelector("#loginUser").focus();
+  }
+
+  render();
 }
 
-async function syncFamilyFromSupabase(){
- const client=window.supabaseClient;
- if(!client || state.role!=="family" || !state.authUser)return;
- const {data:rows,error}=await client.from("students")
-   .select("*")
-   .eq("family_user_id",state.authUser.id)
-   .order("created_at",{ascending:true});
- if(error){console.error("Supabase students:",error);return;}
- const ids=(rows||[]).map(r=>r.id);
- const [delRes,earlyRes,medRes]=await Promise.all([
-   ids.length?client.from("student_delegates").select("*").in("student_id",ids):Promise.resolve({data:[],error:null}),
-   ids.length?client.from("early_exits").select("*").in("student_id",ids):Promise.resolve({data:[],error:null}),
-   ids.length?client.from("student_medications").select("*").in("student_id",ids):Promise.resolve({data:[],error:null})
- ]);
- const delegates=delRes.data||[], early=earlyRes.data||[], meds=medRes.data||[];
- db.students=(db.students||[]).filter(x=>!x._supabaseFamily);
- const mapped=(rows||[]).map(r=>{
-   const oid=r.order_id ? (orders.find(x=>x) || "Primaria") : "Primaria";
-   const campus=r.campus_id ? "Plesso Centrale" : "Plesso Centrale";
-   return {
-    id:r.id, _supabaseFamily:true, name:`${r.first_name} ${r.last_name}`,
-    order:oid, campus:campus, class:"", dob:r.date_of_birth||"",
-    parents:[{name:state.user.first_name+" "+state.user.last_name,phone:r.parent_phone||"",email:r.parent_email||""}],
-    delegates:delegates.filter(x=>x.student_id===r.id).map(x=>({name:x.full_name,relation:x.relationship,document:x.document_info,validity:x.validity_date||""})),
-    early:early.filter(x=>x.student_id===r.id).map(x=>({type:x.exit_type,date:x.exit_date||"",time:x.exit_time||"",person:x.authorized_person||""})),
-    allergy:r.allergies||"Nessuna",health:r.other_health_info||"",
-    med:meds.filter(x=>x.student_id===r.id).length?"Sì":"No",
-    medications:meds.filter(x=>x.student_id===r.id).map(x=>({name:x.medication_name,time:x.administration_time,dose:x.dose,method:x.method,school:x.administered_at_school?"Sì":"No"})),
-    mensa:r.school_canteen?"Sì":"No",homeMeal:r.home_meal?"Sì":"No",diet:r.diet||"",
-    transport:r.transport?"Sì":"No",transportNote:r.transport_notes||"",
-    docsInfo:r.document_info||"",note:r.notes||"",
-    familySubmitted:r.family_submitted,verificationStatus:r.verification_status
-   };
- });
- db.students.push(...mapped);
- state.user.children=ids;
- state.familySupabaseLoaded=true;
+
+/* =========================================================
+   RENDER
+   ========================================================= */
+
+function loginPage() {
+  return `
+    <div class="login-page">
+
+      <div class="login-card">
+
+        <div class="login-logo">
+          <img
+            src="assets/logo_ic_anzio_i.jpeg"
+            alt="I.C. Anzio I"
+          />
+        </div>
+
+        <h1>I.C. Anzio I</h1>
+
+        <p class="login-subtitle">
+          Portale scolastico
+        </p>
+
+        <form onsubmit="event.preventDefault(); doLogin();">
+
+          <label>
+            Username
+
+            <input
+              id="loginUsername"
+              autocomplete="username"
+              placeholder="Inserisci username"
+              required
+            />
+          </label>
+
+          <label>
+            Password
+
+            <input
+              id="loginPassword"
+              type="password"
+              autocomplete="current-password"
+              placeholder="Inserisci password"
+              required
+            />
+          </label>
+
+          <button
+            type="submit"
+            class="login-button"
+          >
+            Accedi
+          </button>
+
+        </form>
+
+        <div class="login-info">
+
+          <strong>Ambiente di test</strong>
+
+          <p>
+            Password iniziale:
+            <code>${DEFAULT_PASSWORD}</code>
+          </p>
+
+          <p>
+            Al primo accesso sarà richiesto
+            di impostare una password personale.
+          </p>
+
+        </div>
+
+      </div>
+
+    </div>
+  `;
 }
 
-async function syncStaffFromSupabase(){
- const client=window.supabaseClient;
- if(!client || !state.authUser || (state.role!=="teacher" && state.role!=="admin")) return;
- const [stu,del,early,med,ordersRes,campusesRes,classesRes]=await Promise.all([
-   client.from("students").select("*").order("created_at",{ascending:true}),
-   client.from("student_delegates").select("*"),
-   client.from("early_exits").select("*"),
-   client.from("student_medications").select("*"),
-   client.from("school_orders").select("*"),
-   client.from("campuses").select("*"),
-   client.from("classes").select("*")
- ]);
- if(stu.error){console.error(stu.error);return;}
- const orderMap=Object.fromEntries((Array.isArray(ordersRes.data)?ordersRes.data:[]).map(x=>[x.id,x.name||x.title||""]));
- const campusMap=Object.fromEntries((Array.isArray(campusesRes.data)?campusesRes.data:[]).map(x=>[x.id,x.name||x.title||""]));
- const classMap=Object.fromEntries((Array.isArray(classesRes.data)?classesRes.data:[]).map(x=>[x.id,x.name||x.code||x.title||""]));
- const delegates=Array.isArray(del.data)?del.data:[];
- const earlyRows=Array.isArray(early.data)?early.data:[];
- const meds=Array.isArray(med.data)?med.data:[];
- db.students=(Array.isArray(stu.data)?stu.data:[]).map(r=>({
-   id:r.id,
-   _supabase:true,
-   name:[r.first_name,r.last_name].filter(Boolean).join(" "),
-   order:orderMap[r.school_order_id]||"Primaria",
-   campus:campusMap[r.campus_id]||"Plesso Centrale",
-   class:classMap[r.class_id]||"",
-   dob:r.date_of_birth||"",
-   parents:[{name:r.parent_name||"",phone:r.parent_phone||"",email:r.parent_email||""}],
-   delegates:delegates.filter(x=>x.student_id===r.id).map(x=>({name:x.full_name||"",relation:x.relationship||"",document:x.document_info||"",validity:x.validity_date||""})),
-   early:earlyRows.filter(x=>x.student_id===r.id).map(x=>({type:x.exit_type||"Occasionale",date:x.exit_date||"",time:x.exit_time||"",person:x.authorized_person||""})),
-   allergy:r.allergies||"Nessuna",
-   health:r.other_health_info||"",
-   med:meds.some(x=>x.student_id===r.id)?"Sì":"No",
-   medications:meds.filter(x=>x.student_id===r.id).map(x=>({name:x.medication_name||"",time:x.administration_time||"",dose:x.dose||"",method:x.method||"",school:x.administered_at_school?"Sì":"No"})),
-   mensa:r.school_canteen?"Sì":"No",
-   homeMeal:r.home_meal?"Sì":"No",
-   diet:r.diet||"",
-   transport:r.transport?"Sì":"No",
-   transportNote:r.transport_notes||"",
-   docsInfo:r.document_info||"",
-   note:r.notes||"",
-   familySubmitted:!!r.family_submitted,
-   verificationStatus:r.verification_status||"Da verificare",
-   verificationNote:r.verification_note||""
- }));
+function changePasswordPage() {
+  return `
+    <div class="login-page">
+
+      <div class="login-card">
+
+        <div class="login-logo">
+          <img
+            src="assets/logo_ic_anzio_i.jpeg"
+            alt="I.C. Anzio I"
+          />
+        </div>
+
+        <h1>Crea la tua password</h1>
+
+        <p class="login-subtitle">
+          Per motivi di sicurezza devi modificare
+          la password iniziale.
+        </p>
+
+        <form
+          onsubmit="event.preventDefault(); changePassword();"
+        >
+
+          <label>
+            Nuova password
+
+            <input
+              id="newPassword"
+              type="password"
+              minlength="8"
+              required
+            />
+          </label>
+
+          <label>
+            Ripeti nuova password
+
+            <input
+              id="newPassword2"
+              type="password"
+              minlength="8"
+              required
+            />
+          </label>
+
+          <button type="submit">
+            Salva nuova password
+          </button>
+
+        </form>
+
+      </div>
+
+    </div>
+  `;
 }
 
-async function doLogin(e,area){
- e.preventDefault();
- const u=(document.querySelector("#loginUser").value||"").trim().toLowerCase();
- const pw=document.querySelector("#loginPass").value;
- const wantedRole=area==="family"?"family":null;
- const emailMap={
-   "admin":"admin@ic-anzio-i.test",
-   "mario.rossi":"mario.rossi@ic-anzio-i.test",
-   "anna.bianchi":"anna.bianchi@ic-anzio-i.test",
-   "luca.rossi":"luca.rossi@ic-anzio-i.test",
-   "giulia.verdi":"giulia.verdi@ic-anzio-i.test"
- };
- const email=emailMap[u] || `${u}@ic-anzio-i.test`;
- const client=window.supabaseClient;
- if(!client){alert("Connessione Supabase non disponibile.");return;}
- const {data,error}=await client.auth.signInWithPassword({email,password:pw});
- if(error){
-   const m=document.querySelector("#loginMsg");
-   m.textContent="Credenziali non corrette o account non ancora creato in Supabase.";
-   m.style.display="block"; return;
- }
- const uid=data.user.id;
- const {data:profile,error:pe}=await client.from("user_profiles").select("*").eq("id",uid).single();
- if(pe || !profile){
-   await client.auth.signOut();
-   const m=document.querySelector("#loginMsg");
-   m.textContent="Account autenticato ma profilo scolastico non configurato.";
-   m.style.display="block"; return;
- }
- if(wantedRole && profile.role!=="family" || !wantedRole && profile.role==="family"){
-   await client.auth.signOut();
-   const m=document.querySelector("#loginMsg");
-   m.textContent=area==="family"?"Questo account non è un account famiglia.":"Questo account non è un account docente/amministratore.";
-   m.style.display="block"; return;
- }
- state.user=profile;
- state.user.display=[profile.first_name,profile.last_name].filter(Boolean).join(" ")||profile.username;
- state.role=profile.role;
- state.page="home";
- state.student=null;
- state.familyStudent=null;
- state.authUser=data.user;
- if(profile.role==='family') await syncFamilyFromSupabase();
- if(profile.role==='teacher' || profile.role==='admin') await syncStaffFromSupabase();
- render();
+function header() {
+  if (!state.user) return "";
+
+  return `
+    <header class="topbar">
+
+      <div class="brand">
+
+        <img
+          src="assets/logo_ic_anzio_i.jpeg"
+          alt="I.C. Anzio I"
+        />
+
+        <div>
+          <strong>I.C. Anzio I</strong>
+          <small>
+            Ambiente di test operativo · V41
+          </small>
+        </div>
+
+      </div>
+
+      <div class="user-area">
+
+        <span>
+          ${roleLabel(state.role)}
+        </span>
+
+        <strong>
+          ${esc(
+            state.user.display ||
+            state.user.username ||
+            "Utente"
+          )}
+        </strong>
+
+        <button
+          class="logout"
+          onclick="doLogout()"
+        >
+          Esci
+        </button>
+
+      </div>
+
+    </header>
+  `;
 }
 
-async function restoreSession(){  const client=window.supabaseClient;
- if(!client)return;
- const {data}=await client.auth.getSession();
- if(!data?.session)return;
- const uid=data.session.user.id;
- const {data:profile}=await client.from("user_profiles").select("*").eq("id",uid).single();
- if(profile){
-   state.user=profile;
-   state.user.display=[profile.first_name,profile.last_name].filter(Boolean).join(" ")||profile.username;
-   state.role=profile.role;
-   state.authUser=data.session.user;
-   state.page="home";
-   if(profile.role==='family') await syncFamilyFromSupabase();
-   if(profile.role==='teacher' || profile.role==='admin') await syncStaffFromSupabase();
-   render();
- }
+function nav() {
+  if (!state.user) return "";
+
+  let links = `
+    <button onclick="go('home')">
+      🏠 Home
+    </button>
+  `;
+
+  if (state.role === "family") {
+    links += `
+      <button onclick="go('children')">
+        👨‍👩‍👧 I miei figli
+      </button>
+    `;
+  }
+
+  if (
+    state.role === "teacher" ||
+    state.role === "admin"
+  ) {
+    links += `
+      <button onclick="go('students')">
+        👨‍🎓 Alunni
+      </button>
+
+      <button onclick="go('verifications')">
+        ✅ Verifiche
+      </button>
+
+      <button onclick="go('structure')">
+        🏫 Struttura
+      </button>
+    `;
+  }
+
+  return `
+    <nav class="sidebar">
+      ${links}
+    </nav>
+  `;
 }
 
-function side(){
- if(state.role==="family") return `<aside class="side">
-   <div class="section" style="padding:12px;margin-bottom:8px"><b>👨‍👩‍👧 AREA FAMIGLIE</b></div>
-   <button class="nav ${state.page==='home'?'active':''}" onclick="go('home')">🏠 Home</button>
-   <button class="nav ${state.page==='familyChildren'?'active':''}" onclick="go('familyChildren')">👧 I miei figli</button>
-   <button class="nav ${state.page==='familyDocs'?'active':''}" onclick="go('familyDocs')">📄 Documenti</button>
-   <button class="nav ${state.page==='password'?'active':''}" onclick="go('password')">🔐 Password</button>
- </aside>`;
- return `<aside class="side">
-   <div class="section" style="padding:12px;margin-bottom:8px"><b>👩‍🏫 AREA DOCENTI</b></div>
-   <button class="nav ${state.page==='home'?'active':''}" onclick="go('home')">🏠 Dashboard</button>
-   <button class="nav ${state.page==='students'?'active':''}" onclick="go('students')">👨‍🎓 Alunni</button>
-   <button class="nav ${state.page==='add'?'active':''}" onclick="go('add')">➕ Inserisci alunno</button>
-   <button class="nav ${state.page==='docs'?'active':''}" onclick="go('docs')">📁 Documenti</button>
-   <button class="nav ${state.page==='verification'?'active':''}" onclick="go('verification')">🔎 Verifiche famiglie</button>
-   <button class="nav ${state.page==='today'?'active':''}" onclick="go('today')">📅 Oggi</button>
-   <button class="nav ${state.page==='users'?'active':''}" onclick="go('users')">👥 Utenti</button>
-   <button class="nav ${state.page==='password'?'active':''}" onclick="go('password')">🔐 Password</button>
- </aside>`;
-}
-function page(){if(state.page==='home')return home();if(state.page==='students')return students();if(state.page==='add')return add();if(state.page==='docs')return docs();if(state.page==='verification')return verification();if(state.page==='today')return today();if(state.page==='users')return users();if(state.page==='student')return student();if(state.page==='verificationDetail')return verificationDetail();if(state.page==='password')return passwordPage();if(state.page==='familyChildren')return familyChildren();if(state.page==='addFamilyChild')return addFamilyChild();if(state.page==='familyDocs')return familyDocs();if(state.page==='familyStudent')return familyStudent();if(state.page==='familyEdit')return renderFamilyEdit();return home()}
-function home(){
- if(state.role==="family") {
-   const count=(state.user.children||[]).length;
-   return `<div class="section"><h2>👨‍👩‍👧 Area Famiglie</h2><p>Benvenuto/a, <b>${state.user.display}</b>.</p><p class="muted">Account: ${state.user.username} · Password personale attiva.</p>
-   <div class="card"><h3>👧 I miei figli</h3><p>${count ? `Hai inserito ${count} ${count===1?"figlio":"figli"} nel tuo account.` : "Non hai ancora inserito un figlio."}</p>
-   <button class="btn primary" onclick="go('familyChildren')">${count?"Gestisci i miei figli":"➕ Inserisci mio figlio"}</button></div>
-   <div class="card" style="margin-top:14px"><h3>📄 Documenti</h3><p class="muted">Potrai consultare e caricare la documentazione relativa ai tuoi figli.</p><button class="btn" onclick="go('familyDocs')">Apri documenti</button></div>
-   </div>`;
- }
- return `<div class="section"><h2>👩‍🏫 Area Docenti</h2><p class="muted">Dashboard di prova per docenti e amministratori.</p><p class="muted">Account: ${state.user.username} · Ruolo: ${state.user.role==="admin"?"Amministratore":"Docente"} · Password personale attiva.</p></div><div class="grid"><div class="card"><span class="muted">Alunni</span><div class="metric">${db.students.length}</div></div><div class="card"><span class="muted">Documenti</span><div class="metric">${db.documents.length}</div></div><div class="card"><span class="muted">Utenti</span><div class="metric">${db.users.length}</div></div><div class="card"><span class="muted">Plessi</span><div class="metric">${campuses.length}</div></div></div><div class="section" style="margin-top:16px"><h3>⚠️ Prima del passaggio reale</h3><p>Questa build usa localStorage. Serve esclusivamente per provare il funzionamento e raccogliere modifiche. Non usare dati reali di minori.</p><p><b>Livelli informativi:</b> 🟢 operativo · 🟠 autorizzazione · 🔴 sanitario riservato.</p></div>`;
-}
-function familyChildren(){
- const children=state.user.children||[];
- return `<div class="section"><h2>👧 I miei figli</h2>
- <p class="muted">I figli associati al tuo account sono caricati dal database scolastico. L’inserimento/modifica completo su Supabase sarà attivato nel passaggio successivo.</p><button class="btn" onclick="refreshFamily()">↻ Aggiorna dati</button>
- <button class="btn primary" onclick="go('addFamilyChild')">➕ Inserisci mio figlio</button>
- <div style="margin-top:16px">${children.length ? children.map((id,i)=>{const s=db.students.find(x=>x.id===id); return s?`<div class="card"><h3>${s.name}</h3><p>${s.order} · ${s.campus} · Classe ${s.class}</p><button class="btn primary" onclick="openFamilyStudent(\'${s.id}\')">Apri scheda</button></div>`:""}).join("") : `<div class="card"><h3>Nessun figlio inserito</h3><p>Utilizza il pulsante sopra per inserire il primo figlio.</p></div>`}</div>
- </div>`;
-}
-async function refreshFamily(){
- await syncFamilyFromSupabase();
- render();
-}
-function addFamilyChild(){
- return `<div class="section"><button class="btn" onclick="go('familyChildren')">← I miei figli</button><h2>➕ Inserisci mio figlio</h2>
- <p class="muted">Compila i dati del figlio e le informazioni/autorizzazioni che vuoi comunicare alla scuola. In questa versione di test i dati restano nel browser.</p>
- <form onsubmit="saveFamilyChild(event)">
- <div class="formgrid">
-  <div class="field"><label>Nome del figlio</label><input id="fc_n" required></div>
-  <div class="field"><label>Cognome del figlio</label><input id="fc_c" required></div>
-  <div class="field"><label>Ordine</label><select id="fc_o">${orders.map(x=>`<option>${x}</option>`).join("")}</select></div>
-  <div class="field"><label>Plesso</label><select id="fc_p">${campuses.map(x=>`<option>${x}</option>`).join("")}</select></div>
-  <div class="field"><label>Classe / sezione</label><input id="fc_cl" required></div>
-  <div class="field"><label>Data di nascita (facoltativa)</label><input id="fc_dob" type="date"></div>
+function appPage() {
+  if (state.page === "home") {
+    return home();
+  }
 
-  <div class="field" style="grid-column:1/-1"><h3>📞 Recapiti</h3></div>
-  <div class="field"><label>Telefono del genitore</label><input id="fc_phone" type="tel"></div>
-  <div class="field"><label>Email del genitore</label><input id="fc_email" type="email"></div>
+  if (state.page === "children") {
+    return childrenPage();
+  }
 
-  <div class="field" style="grid-column:1/-1"><h3>🚪 Deleghe e uscite</h3></div>
-  <div class="field" style="grid-column:1/-1"><label>Deleghe per il ritiro</label>
-    <div id="fc_delegateList"></div>
-    <button type="button" class="btn" onclick="addFamilyDelegateRow()">+ Aggiungi delegato</button>
-  </div>
-  <div class="field" style="grid-column:1/-1"><label>Uscite anticipate / autorizzazioni</label>
-    <div id="fc_earlyList"></div>
-    <button type="button" class="btn" onclick="addFamilyEarlyRow()">+ Aggiungi autorizzazione</button>
-  </div>
+  if (state.page === "addChild") {
+    return addChildPage();
+  }
 
-  <div class="field" style="grid-column:1/-1"><h3>🩺 Informazioni sanitarie</h3></div>
-  <div class="field"><label>Allergie / intolleranze</label><textarea id="fc_allergy" placeholder="Nessuna / descrizione"></textarea></div>
-  <div class="field"><label>Altre informazioni sanitarie importanti</label><textarea id="fc_health" placeholder="Informazioni operative da comunicare alla scuola"></textarea></div>
-  <div class="field" style="grid-column:1/-1">
-    <label>Farmaci</label>
-    <select id="fc_med" onchange="toggleFamilyMedication()"><option>No</option><option>Sì</option></select>
-    <div id="fc_medFields" style="display:none;margin-top:10px"><div id="fc_medList"></div><button type="button" class="btn" onclick="addFamilyMedicationRow()">+ Aggiungi farmaco</button></div>
-  </div>
+  if (state.page === "familyStudent") {
+    return familyStudentPage();
+  }
 
-  <div class="field" style="grid-column:1/-1"><h3>🍽️ Mensa e alimentazione</h3></div>
-  <div class="field"><label>Mensa</label><select id="fc_mensa"><option>No</option><option>Sì</option></select></div>
-  <div class="field"><label>Pasto da casa</label><select id="fc_homeMeal"><option>No</option><option>Sì</option></select></div>
-  <div class="field"><label>Indicazioni alimentari / dieta</label><textarea id="fc_diet" placeholder="Eventuali informazioni da comunicare"></textarea></div>
+  if (state.page === "editStudent") {
+    return editStudentPage();
+  }
 
-  <div class="field" style="grid-column:1/-1"><h3>🚌 Trasporto</h3></div>
-  <div class="field"><label>Trasporto scolastico</label><select id="fc_transport"><option>No</option><option>Sì</option></select></div>
-  <div class="field"><label>Note sul trasporto</label><textarea id="fc_transportNote" placeholder="Fermata, modalità, autorizzazioni o altre note"></textarea></div>
+  if (state.page === "students") {
+    return studentsPage();
+  }
 
-  <div class="field" style="grid-column:1/-1"><h3>📄 Documentazione</h3></div>
-  <div class="field"><label>Documenti / autorizzazioni da comunicare</label><textarea id="fc_docs" placeholder="Indicare i documenti che verranno consegnati alla scuola"></textarea></div>
-  <div class="field" style="grid-column:1/-1"><label>Note aggiuntive</label><textarea id="fc_note"></textarea></div>
- </div><br><button class="btn primary">Salva dati e invia alla scuola</button></form></div>`;
-}
-function familyMedicationRow(){
- return `<div class="card medrow family-medrow" style="margin:10px 0"><div class="formgrid">
- <div class="field"><label>Nome farmaco</label><input data-fmed="name" required></div>
- <div class="field"><label>Quando</label><input data-fmed="time" placeholder="Es. ore 10:00 / al bisogno"></div>
- <div class="field"><label>Dosaggio</label><input data-fmed="dose"></div>
- <div class="field"><label>Modalità</label><input data-fmed="method"></div>
- <div class="field"><label>Somministrazione a scuola</label><select data-fmed="school"><option>Sì</option><option>No</option></select></div>
- </div><button type="button" class="btn" onclick="this.closest('.family-medrow').remove()">Rimuovi farmaco</button></div>`;
-}
-function toggleFamilyMedication(){const show=fc_med.value==="Sì";document.querySelector("#fc_medFields").style.display=show?"block":"none";if(show&&!document.querySelector(".family-medrow"))addFamilyMedicationRow()}
-function addFamilyMedicationRow(){document.querySelector("#fc_medList").insertAdjacentHTML("beforeend",familyMedicationRow())}
-function collectFamilyMedications(){return [...document.querySelectorAll(".family-medrow")].map(r=>({name:r.querySelector('[data-fmed="name"]').value,time:r.querySelector('[data-fmed="time"]').value,dose:r.querySelector('[data-fmed="dose"]').value,method:r.querySelector('[data-fmed="method"]').value,school:r.querySelector('[data-fmed="school"]').value})).filter(x=>x.name)}
-async function saveFamilyChild(e){
- e.preventDefault();
- const client=window.supabaseClient;
- if(!client || !state.authUser){alert("Sessione Supabase non disponibile.");return;}
+  if (state.page === "staffStudent") {
+    return staffStudentPage();
+  }
 
- const {data:row,error}=await client.from("students").insert({
-   first_name:fc_n.value.trim(),
-   last_name:fc_c.value.trim(),
-   school_year:"2026/2027",
-   date_of_birth:fc_dob.value||null,
-   family_user_id:state.authUser.id,
-   parent_phone:fc_phone.value||null,
-   parent_email:fc_email.value||null,
-   allergies:fc_allergy.value||null,
-   other_health_info:fc_health.value||null,
-   school_canteen:fc_mensa.value==="Sì",
-   home_meal:fc_homeMeal.value==="Sì",
-   diet:fc_diet.value||null,
-   transport:fc_transport.value==="Sì",
-   transport_notes:fc_transportNote.value||null,
-   document_info:fc_docs.value||null,
-   notes:fc_note.value||null,
-   family_submitted:true,
-   verification_status:"Da verificare"
- }).select().single();
+  if (state.page === "verifications") {
+    return verificationsPage();
+  }
 
- if(error){alert("Impossibile salvare l'alunno: "+error.message);return;}
- const sid=row.id;
+  if (state.page === "verificationDetail") {
+    return verificationDetailPage();
+  }
 
- const delegates=collectFamilyDelegates();
- if(delegates.length){
-   const payload=delegates.map(d=>({
-     student_id:sid,full_name:d.name||"Delegato",relationship:d.relation||null,
-     document_info:d.document||null,validity_date:d.validity||null,active:true
-   }));
-   const r=await client.from("student_delegates").insert(payload);
-   if(r.error){alert("Alunno salvato, ma errore nelle deleghe: "+r.error.message);}
- }
- const early=collectFamilyEarly();
- if(early.length){
-   const payload=early.map(x=>({
-     student_id:sid,exit_type:x.type||"Occasionale",exit_date:x.date||null,
-     exit_time:x.time||null,authorized_person:x.person||null
-   }));
-   const r=await client.from("early_exits").insert(payload);
-   if(r.error){alert("Alunno salvato, ma errore nelle uscite anticipate: "+r.error.message);}
- }
- if(fc_med.value==="Sì"){
-   const meds=collectFamilyMedications();
-   if(meds.length){
-     const payload=meds.map(m=>({
-       student_id:sid,medication_name:m.name||"Farmaco",
-       administration_time:m.time||null,dose:m.dose||null,method:m.method||null,
-       administered_at_school:m.school==="Sì"
-     }));
-     const r=await client.from("student_medications").insert(payload);
-     if(r.error){alert("Alunno salvato, ma errore nei farmaci: "+r.error.message);}
-   }
- }
+  if (state.page === "structure") {
+    return structurePage();
+  }
 
- await syncFamilyFromSupabase();
- state.familyStudent=db.students.find(x=>x.id===sid)||null;
- state.page="familyStudent";
- render();
+  return home();
 }
 
-function familyStudent(){
- const s=state.familyStudent;
- if(!s)return familyChildren();
- const meds=(s.medications||[]).map((m,i)=>`<div style="margin-top:8px"><b>💊 ${m.name||"Farmaco "+(i+1)}</b><br>Quando: ${m.time||"—"} · Dose: ${m.dose||"—"} · Modalità: ${m.method||"—"} · A scuola: ${m.school||"—"}</div>`).join("")||"Nessun farmaco indicato.";
- return `<div class="section"><button class="btn" onclick="go('familyChildren')">← I miei figli</button><h2>${s.name}</h2>
- <div class="card"><b>Stato comunicazione:</b> <span class="pill orange">${s.verificationStatus||"Da verificare"}</span><p class="muted">Le informazioni inserite dalla famiglia dovranno essere verificate dalla scuola nella versione definitiva.</p></div><div style="margin:12px 0"><button class="btn primary" onclick="editFamilyChild(\'${s.id}\')">✏️ Modifica scheda</button></div>
- <div class="grid">
-  <div class="card"><b>Ordine</b><br>${s.order}</div><div class="card"><b>Plesso</b><br>${s.campus}</div><div class="card"><b>Classe</b><br>${s.class}</div>
-  <div class="card"><b>📞 Recapito</b><br>${(s.parents||[]).map(g=>`${g.name||"—"}<br>📱 ${g.phone||"—"}<br>✉️ ${g.email||"—"}`).join("")||"—"}</div>
-  <div class="card"><b>🚪 Deleghe</b><br>${formatDelegates(s.delegates)}</div>
-  <div class="card"><b>🚪 Uscita anticipata</b><br>${formatEarly(s.early)}</div>
-  <div class="card"><b>🩺 Allergie</b><br>${s.allergy||"Nessuna"}</div>
-  <div class="card"><b>🩺 Altre informazioni sanitarie</b><br>${s.health||"—"}</div>
-  <div class="card"><b>💊 Farmaci</b><br>${s.med==="Sì"?meds:"Nessuno indicato"}</div>
-  <div class="card"><b>🍽️ Mensa</b><br>${s.mensa}</div>
-  <div class="card"><b>🥪 Pasto da casa</b><br>${s.homeMeal}</div>
-  <div class="card"><b>🍽️ Dieta / indicazioni alimentari</b><br>${s.diet||"—"}</div>
-  <div class="card"><b>🚌 Trasporto</b><br>${s.transport}</div>
-  <div class="card"><b>🚌 Note trasporto</b><br>${s.transportNote||"—"}</div>
-    <div class="card"><b>📄 Documentazione</b><br>${s.docsInfo||"Nessuna indicazione"}</div>
-  <div class="card"><b>📝 Note</b><br>${s.note||"—"}</div>
- </div></div>`;
-}
-function formatDelegates(items){
- const a=normList(items); if(!a.length)return "Nessuna indicata";
- return a.map(d=>typeof d==='string'?d:`<div style="margin:6px 0"><b>${d.name||"—"}</b> · ${d.relation||"—"}<br>Documento: ${d.document||"—"} · Validità: ${d.validity||"—"}</div>`).join('');
-}
-function formatEarly(items){
- const a=normList(items); if(!a.length)return "—";
- return a.map(e=>typeof e==='string'?e:`<div style="margin:6px 0"><b>${e.type||"—"}</b> · ${e.date||"—"} ${e.time||""}<br>Persona autorizzata: ${e.person||"—"}</div>`).join('');
-}
-function openFamilyStudent(id){
- const s=db.students.find(x=>String(x.id)===String(id));
- if(!s){alert("Scheda alunno non trovata.");return;}
- if(state.role!=="family" || !(state.user.children||[]).map(String).includes(String(id))){alert("Non hai accesso a questa scheda.");return;}
- state.familyStudent=s; state.page="familyStudent"; render();
-}
-function editFamilyChild(id){
- const s=db.students.find(x=>String(x.id)===String(id));
- if(!s){alert("Scheda alunno non trovata.");return;}
- if(state.role!=="family" || !(state.user.children||[]).map(String).includes(String(id))){alert("Non hai accesso a questa scheda.");return;}
- state.familyStudent=s;
- state.page="familyEdit";
- render();
-}
-function renderFamilyEdit(){
- const s=state.familyStudent;
- if(!s)return familyChildren();
- if(!s)return familyChildren();
- const g=(s.parents||[])[0]||{};
- const meds=(s.medications||[]);
- return `<div class="section"><button class="btn" onclick="openFamilyStudent(\'${s.id}\')">← Scheda figlio</button><h2>✏️ Aggiorna informazioni — ${s.name}</h2>
- <p class="muted">Le modifiche saranno nuovamente inviate alla scuola e lo stato tornerà a “Da verificare”.</p>
- <form onsubmit="updateFamilyChild(event,'${s.id}')"><div class="formgrid">
-  <div class="field"><label>Nome</label><input id="ef_n" value="${s.name.split(" ")[0]||""}" required></div>
-  <div class="field"><label>Cognome</label><input id="ef_c" value="${s.name.split(" ").slice(1).join(" ")||""}" required></div>
-  <div class="field"><label>Ordine</label><select id="ef_o">${orders.map(x=>`<option ${x===s.order?"selected":""}>${x}</option>`).join("")}</select></div>
-  <div class="field"><label>Plesso</label><select id="ef_p">${campuses.map(x=>`<option ${x===s.campus?"selected":""}>${x}</option>`).join("")}</select></div>
-  <div class="field"><label>Classe / sezione</label><input id="ef_cl" value="${s.class||""}" required></div>
-  <div class="field"><label>Data di nascita</label><input id="ef_dob" type="date" value="${s.dob||""}"></div>
-  <div class="field"><label>Telefono genitore</label><input id="ef_phone" type="tel" value="${g.phone||""}"></div>
-  <div class="field"><label>Email genitore</label><input id="ef_email" type="email" value="${g.email||""}"></div>
-  <div class="field" style="grid-column:1/-1"><label>Deleghe</label>
-    <div id="ef_delegateList"></div>
-    <button type="button" class="btn" onclick="addEditFamilyDelegateRow()">+ Aggiungi delegato</button>
-  </div>
-  <div class="field" style="grid-column:1/-1"><label>Uscite anticipate / autorizzazioni</label>
-    <div id="ef_earlyList"></div>
-    <button type="button" class="btn" onclick="addEditFamilyEarlyRow()">+ Aggiungi autorizzazione</button>
-  </div>
-  <div class="field"><label>Allergie / intolleranze</label><textarea id="ef_allergy">${s.allergy==="Nessuna"?"":s.allergy||""}</textarea></div>
-  <div class="field"><label>Altre informazioni sanitarie</label><textarea id="ef_health">${s.health||""}</textarea></div>
-  <div class="field" style="grid-column:1/-1"><h3>💊 Farmaci</h3>
-   <select id="ef_med" onchange="toggleEditFamilyMedication()"><option ${s.med!=="Sì"?"selected":""}>No</option><option ${s.med==="Sì"?"selected":""}>Sì</option></select>
-   <div id="ef_medFields" style="display:${s.med==="Sì"?"block":"none"};margin-top:10px">
-    <div id="ef_medList">${(s.medications||[]).map((m,i)=>editFamilyMedicationRow(m,i)).join("")}</div>
-    <button type="button" class="btn" onclick="addEditFamilyMedicationRow()">+ Aggiungi farmaco</button>
-   </div>
-  </div>
-  <div class="field"><label>Mensa</label><select id="ef_mensa"><option ${s.mensa==="No"?"selected":""}>No</option><option ${s.mensa==="Sì"?"selected":""}>Sì</option></select></div>
-  <div class="field"><label>Pasto da casa</label><select id="ef_homeMeal"><option ${s.homeMeal==="No"?"selected":""}>No</option><option ${s.homeMeal==="Sì"?"selected":""}>Sì</option></select></div>
-  <div class="field"><label>Dieta / indicazioni alimentari</label><textarea id="ef_diet">${s.diet||""}</textarea></div>
-  <div class="field"><label>Trasporto</label><select id="ef_transport"><option ${s.transport==="No"?"selected":""}>No</option><option ${s.transport==="Sì"?"selected":""}>Sì</option></select></div>
-  <div class="field"><label>Note trasporto</label><textarea id="ef_transportNote">${s.transportNote||""}</textarea></div>
-  <div class="field" style="grid-column:1/-1"><label>Documentazione / autorizzazioni da comunicare</label><textarea id="ef_docs">${s.docsInfo||""}</textarea></div>
-  <div class="field" style="grid-column:1/-1"><label>Note aggiuntive</label><textarea id="ef_note">${s.note||""}</textarea></div>
- </div><br><button class="btn primary">💾 Salva modifiche</button></form></div>`;
-}
-function editFamilyMedicationRow(m,i){
- return `<div class="card edit-medrow" style="margin:10px 0">
-  <div class="formgrid">
-   <div class="field"><label>Nome farmaco</label><input data-emed="name" value="${m.name||""}" required></div>
-   <div class="field"><label>Quando</label><input data-emed="time" value="${m.time||""}"></div>
-   <div class="field"><label>Dosaggio</label><input data-emed="dose" value="${m.dose||""}"></div>
-   <div class="field"><label>Modalità</label><input data-emed="method" value="${m.method||""}"></div>
-   <div class="field"><label>Somministrazione a scuola</label><select data-emed="school"><option ${m.school==="Sì"||!m.school?"selected":""}>Sì</option><option ${m.school==="No"?"selected":""}>No</option></select></div>
-  </div>
-  <button type="button" class="btn" onclick="this.closest('.edit-medrow').remove()">Rimuovi farmaco</button>
- </div>`;
-}
-function toggleEditFamilyMedication(){
- const show=ef_med.value==="Sì";
- document.querySelector("#ef_medFields").style.display=show?"block":"none";
- if(show && !document.querySelector(".edit-medrow")) addEditFamilyMedicationRow();
-}
-function addEditFamilyMedicationRow(){
- document.querySelector("#ef_medList").insertAdjacentHTML("beforeend",editFamilyMedicationRow({name:"",time:"",dose:"",method:"",school:"Sì"},Date.now()));
-}
-function collectEditFamilyMedications(){
- return [...document.querySelectorAll(".edit-medrow")].map(r=>({
-  name:r.querySelector('[data-emed="name"]').value,
-  time:r.querySelector('[data-emed="time"]').value,
-  dose:r.querySelector('[data-emed="dose"]').value,
-  method:r.querySelector('[data-emed="method"]').value,
-  school:r.querySelector('[data-emed="school"]').value
- })).filter(x=>x.name||x.time||x.dose||x.method);
-}
-async function updateFamilyChild(e,id){
- e.preventDefault();
- const client=window.supabaseClient;
- if(!client || !state.authUser){alert("Sessione Supabase non disponibile.");return;}
- const nameParts=(`${ef_n.value} ${ef_c.value}`).trim().split(/\s+/);
- const first=nameParts.shift()||"";
- const last=nameParts.join(" ")||"";
- const {error}=await client.from("students").update({
-   first_name:first,last_name:last,date_of_birth:ef_dob.value||null,
-   parent_phone:ef_phone.value||null,parent_email:ef_email.value||null,
-   allergies:ef_allergy.value||null,other_health_info:ef_health.value||null,
-   school_canteen:ef_mensa.value==="Sì",home_meal:ef_homeMeal.value==="Sì",
-   diet:ef_diet.value||null,transport:ef_transport.value==="Sì",
-   transport_notes:ef_transportNote.value||null,document_info:ef_docs.value||null,
-   notes:ef_note.value||null,family_submitted:true,verification_status:"Da verificare",
-   updated_at:new Date().toISOString()
- }).eq("id",id).eq("family_user_id",state.authUser.id);
- if(error){alert("Impossibile aggiornare la scheda: "+error.message);return;}
+function render() {
+  const app =
+    document.getElementById("app");
 
- await client.from("student_delegates").delete().eq("student_id",id);
- const delegates=collectEditFamilyDelegates();
- if(delegates.length) await client.from("student_delegates").insert(delegates.map(d=>({
-   student_id:id,full_name:d.name||"Delegato",relationship:d.relation||null,
-   document_info:d.document||null,validity_date:d.validity||null,active:true
- })));
+  if (!app) return;
 
- await client.from("early_exits").delete().eq("student_id",id);
- const early=collectEditFamilyEarly();
- if(early.length) await client.from("early_exits").insert(early.map(x=>({
-   student_id:id,exit_type:x.type||"Occasionale",exit_date:x.date||null,
-   exit_time:x.time||null,authorized_person:x.person||null
- })));
+  if (!state.user) {
+    app.innerHTML = loginPage();
+    return;
+  }
 
- await client.from("student_medications").delete().eq("student_id",id);
- if(ef_med.value==="Sì"){
-   const meds=collectEditFamilyMedications();
-   if(meds.length) await client.from("student_medications").insert(meds.map(m=>({
-     student_id:id,medication_name:m.name||"Farmaco",administration_time:m.time||null,
-     dose:m.dose||null,method:m.method||null,administered_at_school:m.school==="Sì"
-   })));
- }
+  if (state.page === "changePassword") {
+    app.innerHTML = changePasswordPage();
+    return;
+  }
 
- await syncFamilyFromSupabase();
- state.familyStudent=db.students.find(x=>x.id===id)||null;
- state.page="familyStudent";
- alert("Scheda aggiornata e inviata nuovamente alla scuola.");
- render();
+  app.innerHTML = `
+    ${header()}
+
+    <div class="app-layout">
+
+      ${nav()}
+
+      <main class="main">
+        ${
+          state.message
+            ? `
+              <div class="toast ${state.message.type}">
+                ${esc(state.message.text)}
+              </div>
+            `
+            : ""
+        }
+
+        ${appPage()}
+      </main>
+
+    </div>
+  `;
 }
 
-function normList(v){return Array.isArray(v)?v:(v&&v!=="—"?String(v).split(/\n+/).filter(Boolean):[]);}
-function delegateRowsHtml(prefix, items){
-  const arr=normList(items);
-  if(!arr.length) return '';
-  return arr.map((d,i)=>`<div class="family-row delegate-row" style="display:grid;grid-template-columns:1.3fr 1fr 1.2fr 1fr auto;gap:8px;align-items:end;margin:8px 0;padding:10px;border:1px solid #e3e7ee;border-radius:10px">
-    <div class="field"><label>Nome e cognome</label><input data-${prefix}del="name" value="${(d.name||"").replace(/"/g,'&quot;')}"></div>
-    <div class="field"><label>Rapporto</label><input data-${prefix}del="relation" value="${(d.relation||"").replace(/"/g,'&quot;')}"></div>
-    <div class="field"><label>Documento</label><input data-${prefix}del="document" value="${(d.document||"").replace(/"/g,'&quot;')}"></div>
-    <div class="field"><label>Validità</label><input data-${prefix}del="validity" type="date" value="${d.validity||""}"></div>
-    <button type="button" class="btn" onclick="this.closest('.delegate-row').remove()">Rimuovi</button>
-  </div>`).join('');
-}
-function earlyRowsHtml(prefix, items){
-  const arr=normList(items);
-  if(!arr.length) return '';
-  return arr.map(e=>`<div class="family-row early-row" style="display:grid;grid-template-columns:1fr 1fr 1.2fr 1fr auto;gap:8px;align-items:end;margin:8px 0;padding:10px;border:1px solid #e3e7ee;border-radius:10px">
-    <div class="field"><label>Tipo</label><select data-${prefix}early="type"><option ${e.type==="Occasionale"?"selected":""}>Occasionale</option><option ${e.type==="Ricorrente"?"selected":""}>Ricorrente</option></select></div>
-    <div class="field"><label>Data</label><input data-${prefix}early="date" type="date" value="${e.date||""}"></div>
-    <div class="field"><label>Orario</label><input data-${prefix}early="time" type="time" value="${e.time||""}"></div>
-    <div class="field"><label>Persona autorizzata</label><input data-${prefix}early="person" value="${(e.person||"").replace(/"/g,'&quot;')}"></div>
-    <button type="button" class="btn" onclick="this.closest('.early-row').remove()">Rimuovi</button>
-  </div>`).join('');
-}
-function collectRows(selector, attr){
-  return [...document.querySelectorAll(selector)].map(row=>{
-    const out={}; row.querySelectorAll(`[${attr}]`).forEach(x=>out[x.getAttribute(attr)]=x.value||''); return out;
-  }).filter(x=>Object.values(x).some(Boolean));
-}
-function collectFamilyDelegates(){return collectRows('#fc_delegateList .delegate-row','data-fcdel');}
-function collectEditFamilyDelegates(){return collectRows('#ef_delegateList .delegate-row','data-efdel');}
-function collectFamilyEarly(){return collectRows('#fc_earlyList .early-row','data-fcearly');}
-function collectEditFamilyEarly(){return collectRows('#ef_earlyList .early-row','data-efearly');}
-function addFamilyDelegateRow(){
-  const c=document.getElementById('fc_delegateList'); c.insertAdjacentHTML('beforeend',delegateRowsHtml('fc',[{}]));
-}
-function addEditFamilyDelegateRow(){
-  const c=document.getElementById('ef_delegateList'); c.insertAdjacentHTML('beforeend',delegateRowsHtml('ef',[{}]));
-}
-function addFamilyEarlyRow(){
-  const c=document.getElementById('fc_earlyList'); c.insertAdjacentHTML('beforeend',earlyRowsHtml('fc',[{}]));
-}
-function addEditFamilyEarlyRow(){
-  const c=document.getElementById('ef_earlyList'); c.insertAdjacentHTML('beforeend',earlyRowsHtml('ef',[{}]));
-}
-function renderFamilyStructuredRows(){
-  const d=document.getElementById('fc_delegateList'); if(d) d.innerHTML=delegateRowsHtml('fc',[]);
-  const e=document.getElementById('fc_earlyList'); if(e) e.innerHTML=earlyRowsHtml('fc',[]);
-}
-function renderEditFamilyStructuredRows(student){
-  const d=document.getElementById('ef_delegateList'); if(d) d.innerHTML=delegateRowsHtml('ef',student.delegates);
-  const e=document.getElementById('ef_earlyList'); if(e) e.innerHTML=earlyRowsHtml('ef',student.early);
-}
 
-function familyDocs(){return `<div class="section"><h2>📄 Documenti della famiglia</h2><p class="muted">Area riservata ai propri figli. Nella versione definitiva qui sarà possibile caricare autorizzazioni, deleghe, documentazione per farmaci e altri documenti richiesti dalla scuola.</p><div class="card">Nessun file reale in questa versione di test.</div></div>`;}
+/* =========================================================
+   START
+   ========================================================= */
 
-function add(){return `<div class="section"><h2>Nuovo alunno — test</h2><form onsubmit="addStudent(event)"><div class="formgrid"><div class="field"><label>Nome</label><input id="n" required></div><div class="field"><label>Cognome</label><input id="c" required></div><div class="field"><label>Ordine</label><select id="o">${orders.map(x=>`<option>${x}</option>`).join("")}</select></div><div class="field"><label>Plesso</label><select id="p">${campuses.map(x=>`<option>${x}</option>`).join("")}</select></div><div class="field"><label>Classe / sezione</label><input id="cl" required></div>
-<div class="field"><label>Genitore 1 — nome e cognome</label><input id="g1n" placeholder="Nome e cognome"></div>
-<div class="field"><label>Genitore 1 — telefono</label><input id="g1t" type="tel" placeholder="Es. 333 1234567"></div>
-<div class="field"><label>Genitore 1 — email</label><input id="g1e" type="email" placeholder="email@example.it"></div>
-<div class="field"><label>Genitore 2 — nome e cognome</label><input id="g2n" placeholder="Nome e cognome"></div>
-<div class="field"><label>Genitore 2 — telefono</label><input id="g2t" type="tel" placeholder="Es. 333 1234567"></div>
-<div class="field"><label>Genitore 2 — email</label><input id="g2e" type="email" placeholder="email@example.it"></div>
-<div class="field"><label>Allergie</label><input id="a" placeholder="Nessuna / descrizione"></div><div class="field"><label>Uscita anticipata</label><input id="e" placeholder="—"></div><div class="field"><label>Farmaci</label><select id="m" onchange="toggleMedication()"><option>No</option><option>Sì</option></select></div>
-<div id="medFields" style="display:none;grid-column:1/-1">
-<div id="medList"></div>
-<button type="button" class="btn" onclick="addMedicationRow()">+ Aggiungi farmaco</button>
-</div><div class="field"><label>Mensa</label><select id="me"><option>Sì</option><option>No</option></select></div><div class="field"><label>Trasporto</label><select id="t"><option>Sì</option><option>No</option></select></div><div class="field" style="grid-column:1/-1"><label>Note operative</label><textarea id="note"></textarea></div></div><br><button class="btn primary">Salva alunno di prova</button></form></div>`}
-function medicationRow(i){
-return `<div class="card medrow" style="margin:10px 0">
-<div class="formgrid">
-<div class="field"><label>Nome farmaco</label><input data-med="name" placeholder="Nome del farmaco"></div>
-<div class="field"><label>Somministrazione a scuola</label><select data-med="school"><option>Sì</option><option>No</option></select></div>
-<div class="field"><label>Quando</label><input data-med="time" placeholder="Es. ore 10:00 / al bisogno"></div>
-<div class="field"><label>Dosaggio</label><input data-med="dose" placeholder="Es. 5 ml / 1 compressa"></div>
-<div class="field"><label>Modalità</label><input data-med="method" placeholder="Es. per via orale"></div>
-</div>
-<button type="button" class="btn" style="margin-top:8px" onclick="this.closest('.medrow').remove()">Rimuovi farmaco</button>
-</div>`}
-function toggleMedication(){const show=m.value==="Sì";document.querySelector("#medFields").style.display=show?"block":"none";if(show&&!document.querySelector(".medrow"))addMedicationRow()}
-function addMedicationRow(){document.querySelector("#medList").insertAdjacentHTML("beforeend",medicationRow(Date.now()))}
-function collectMedications(){return [...document.querySelectorAll(".medrow")].map(r=>({name:r.querySelector('[data-med="name"]').value,time:r.querySelector('[data-med="time"]').value,dose:r.querySelector('[data-med="dose"]').value,method:r.querySelector('[data-med="method"]').value,school:r.querySelector('[data-med="school"]').value})).filter(x=>x.name||x.time||x.dose||x.method)}
-function addStudent(e){e.preventDefault();const hasMed=m.value==="Sì";db.students.push({
- id:Date.now(),
- name:`${n.value} ${c.value}`,
- order:o.value,campus:p.value,class:cl.value,
- parents:[
-  {name:g1n.value||"",phone:g1t.value||"",email:g1e.value||""},
-  {name:g2n.value||"",phone:g2t.value||"",email:g2e.value||""}
- ].filter(x=>x.name||x.phone||x.email),
- allergy:a.value||"Nessuna",early:e.value||"—",
- med:hasMed?"Sì":"No",medications:hasMed?collectMedications():[],
- mensa:me.value,transport:t.value,note:note.value
-});save();state.page="students";render()}
-function students(){
- const arr=db.students||[];
- const rows=arr.map(s=>`<div class="row"><div><b>${s.name||"—"}</b></div><div>${s.class||"—"}</div><div>${s.campus||"—"}</div><div>${s.order||"—"}</div><div><button type="button" class="btn primary" onclick="openS('${s.id}')">Apri</button></div></div>`).join("");
- return `<div class="section"><h2>Alunni</h2>
- <p class="muted">Elenco sincronizzato con Supabase.</p>
- <div class="toolbar"><input id="q" placeholder="Cerca..." oninput="filter()"></div>
- <div class="table" id="tab"><div class="row head"><div>Alunno</div><div>Classe</div><div>Plesso</div><div>Ordine</div><div></div></div>${rows||'<div style="padding:20px" class="muted">Nessun alunno presente.</div>'}</div></div>`;
-}
-function filter(){
- const q=(document.querySelector("#q")?.value||"").toLowerCase();
- const a=(db.students||[]).filter(s=>`${s.name||""} ${s.class||""} ${s.campus||""} ${s.order||""}`.toLowerCase().includes(q));
- document.querySelector("#tab").innerHTML='<div class="row head"><div>Alunno</div><div>Classe</div><div>Plesso</div><div>Ordine</div><div></div></div>'+
- (a.length?a.map(s=>`<div class="row"><div><b>${s.name||"—"}</b></div><div>${s.class||"—"}</div><div>${s.campus||"—"}</div><div>${s.order||"—"}</div><div><button type="button" class="btn primary" onclick="openS('${s.id}')">Apri</button></div></div>`).join(""):'<div style="padding:20px" class="muted">Nessun risultato.</div>');
-}
-function openS(id){
- const found=(db.students||[]).find(x=>String(x.id)===String(id));
- if(!found){alert("Scheda alunno non trovata.");return;}
- state.student=found;
- state.page="student";
- render();
-}
-function student(){let s=state.student;return `<div class="section"><button class="btn" onclick="go('students')">← Alunni</button><h2>${s.name}</h2><div class="grid"><div class="card"><b>Ordine</b><br>${s.order}</div><div class="card"><b>Plesso</b><br>${s.campus}</div><div class="card"><b>Classe</b><br>${s.class}</div>
-<div class="card" style="grid-column:1/-1"><b>📞 Recapiti genitori</b><br>
-${(s.parents||[]).length ? (s.parents||[]).map((g,i)=>`<div style="margin-top:10px;padding-top:10px;border-top:1px solid #e4e7ec"><b>Genitore ${i+1}</b><br>${g.name||"—"}<br>📱 ${g.phone||"—"}<br>✉️ ${g.email||"—"}</div>`).join("") : '<span class="muted">Nessun recapito inserito.</span>'}
-</div>
-<div class="card"><b>Allergie</b><br>${s.allergy}</div><div class="card"><b>Uscita</b><br>${s.early}</div><div class="card"><b>Farmaci</b><br>${s.med==="Sì"?`<span class="pill red">Presente — informazioni riservate</span>${(s.medications||[]).map((med,i)=>`<div style="margin-top:10px;padding-top:10px;border-top:1px solid #e4e7ec"><b>💊 ${med.name||"Farmaco "+(i+1)}</b><br><b>Quando:</b> ${med.time||"—"}<br><b>Dosaggio:</b> ${med.dose||"—"}<br><b>Modalità:</b> ${med.method||"—"}<br><b>Somministrazione a scuola:</b> ${med.school||"—"}</div>`).join("")}`:"Nessuno indicato"}</div><div class="card"><b>Mensa</b><br>${s.mensa}</div><div class="card"><b>Trasporto</b><br>${s.transport}</div></div></div><div class="section"><h3>Note operative</h3><p>${s.note||"—"}</p></div><div class="section" style="margin-top:16px"><button type="button" class="btn primary" onclick="openVerification('${s.id}')">🔎 Verifica questa scheda</button></div>`}
-function docs(){return `<div class="section"><h2>Documenti di prova</h2><p class="muted">Per ora registriamo solo metadati di prova, non file reali.</p><form onsubmit="addDoc(event)"><div class="formgrid"><div><label>Nome documento</label><input id="dn" required></div><div><label>Categoria</label><select id="dc"><option>Delega</option><option>Uscita anticipata</option><option>Autorizzazione</option><option>Farmaci</option><option>Allergie</option><option>Mensa</option><option>Trasporto</option></select></div><div><label>Alunno</label><select id="ds">${db.students.map(s=>`<option value="${s.id}">${s.name}</option>`).join("")}</select></div><div><label>Stato</label><select id="dst"><option>Da verificare</option><option>Approvato</option><option>Da integrare</option><option>Scaduto</option></select></div></div><br><button class="btn primary">Registra documento di prova</button></form><hr>${db.documents.map(d=>`<p><b>${d.name}</b> — ${d.cat} — <span class="pill ${d.status==='Approvato'?'green':d.status==='Scaduto'?'red':'orange'}">${d.status}</span></p>`).join("")}</div>`}
-function addDoc(e){e.preventDefault();db.documents.push({name:dn.value,cat:dc.value,student:ds.value,status:dst.value});save();render()}
-function verification(){
- const submitted=db.students.filter(s=>s.familySubmitted);
- const pending=submitted.filter(s=>(s.verificationStatus||"Da verificare")==="Da verificare");
- const approved=submitted.filter(s=>s.verificationStatus==="Approvato");
- const integrate=submitted.filter(s=>s.verificationStatus==="Da integrare");
- const card=(s)=>`<div class="card" style="margin:10px 0">
-   <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
-    <div><h3 style="margin:0">${s.name}</h3><p class="muted">${s.order} · ${s.campus} · Classe ${s.class}</p></div>
-    <span class="pill ${s.verificationStatus==="Approvato"?"green":s.verificationStatus==="Da integrare"?"orange":"orange"}">${s.verificationStatus||"Da verificare"}</span>
-   </div>
-   <div style="margin-top:10px">
-    <b>Famiglia:</b> ${(s.parents||[])[0]?.name||"—"} · 📱 ${(s.parents||[])[0]?.phone||"—"} · ✉️ ${(s.parents||[])[0]?.email||"—"}<br>
-    <b>Deleghe:</b> ${s.delegates||"—"}<br>
-    <b>Uscita:</b> ${s.early||"—"}<br>
-    <b>Allergie:</b> ${s.allergy||"—"}<br>
-    <b>Farmaci:</b> ${s.med==="Sì" ? `${(s.medications||[]).map(m=>m.name).filter(Boolean).join(", ")||"Indicati"} ` : "Nessuno"}<br>
-    <b>Mensa:</b> ${s.mensa||"—"} · <b>Pasto da casa:</b> ${s.homeMeal||"—"} · <b>Trasporto:</b> ${s.transport||"—"}
-   </div>
-   <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-    <button class="btn primary" onclick="openVerification('${s.id}')">Apri e verifica</button>
-   </div>
-  </div>`;
- return `<div class="section"><h2>🔎 Verifiche delle informazioni delle famiglie</h2>
-   <p class="muted">Qui i docenti/amministratori possono controllare le informazioni inserite dalle famiglie e indicare se sono approvate o da integrare.</p>
-   <div class="grid">
-    <div class="card"><span class="muted">Da verificare</span><div class="metric">${pending.length}</div></div>
-    <div class="card"><span class="muted">Approvate</span><div class="metric">${approved.length}</div></div>
-    <div class="card"><span class="muted">Da integrare</span><div class="metric">${integrate.length}</div></div>
-   </div>
-   <div class="section" style="margin-top:16px"><h3>📥 Comunicazioni ricevute</h3>${submitted.length?submitted.map(card).join(""):'<p class="muted">Non ci sono ancora comunicazioni inserite dalle famiglie.</p>'}</div>
- </div>`;
-}
-function openVerification(id){
- const found=(db.students||[]).find(s=>String(s.id)===String(id));
- if(!found){alert("Scheda alunno non trovata.");return;}
- state.student=found;
- state.page="verificationDetail";
- render();
-}
-function verificationDetail(){
- const s=state.student;if(!s)return verification();
- const meds=(s.medications||[]).map((m,i)=>`<div style="padding:8px 0;border-top:1px solid #e4e7ec"><b>💊 ${m.name||"Farmaco "+(i+1)}</b><br>Quando: ${m.time||"—"} · Dose: ${m.dose||"—"} · Modalità: ${m.method||"—"} · A scuola: ${m.school||"—"}</div>`).join("")||"Nessuno";
- return `<div class="section"><button class="btn" onclick="go('verification')">← Verifiche</button><h2>Verifica — ${s.name}</h2>
- <div class="card"><b>Stato attuale:</b> <span class="pill orange">${s.verificationStatus||"Da verificare"}</span></div>
- <div class="grid">
-  <div class="card"><h3>👤 Dati</h3>${s.order} · ${s.campus} · Classe ${s.class}<br>Data di nascita: ${s.dob||"—"}</div>
-  <div class="card"><h3>📞 Genitore</h3>${(s.parents||[]).map(g=>`${g.name||"—"}<br>📱 ${g.phone||"—"}<br>✉️ ${g.email||"—"}`).join("<hr>")}</div>
-  <div class="card"><h3>🚪 Deleghe</h3>${s.delegates||"—"}</div>
-  <div class="card"><h3>🚪 Uscita anticipata</h3>${s.early||"—"}</div>
-  <div class="card"><h3>🩺 Allergie</h3>${s.allergy||"—"}<br><br><b>Altre informazioni:</b><br>${s.health||"—"}</div>
-  <div class="card"><h3>💊 Farmaci</h3>${s.med==="Sì"?meds:"Nessuno"}</div>
-  <div class="card"><h3>🍽️ Alimentazione</h3>Mensa: ${s.mensa||"—"}<br>Pasto da casa: ${s.homeMeal||"—"}<br>${s.diet||""}</div>
-  <div class="card"><h3>🚌 Trasporto</h3>${s.transport||"—"}<br>${s.transportNote||""}</div>
-  <div class="card"><h3>📄 Documentazione</h3>${s.docsInfo||"—"}</div>
- </div>
- <div class="section" style="margin-top:16px"><h3>Esito verifica</h3>
-  <div class="formgrid">
-   <div class="field"><label>Stato</label><select id="verStatus"><option ${s.verificationStatus==="Da verificare"?"selected":""}>Da verificare</option><option ${s.verificationStatus==="Approvato"?"selected":""}>Approvato</option><option ${s.verificationStatus==="Da integrare"?"selected":""}>Da integrare</option></select></div>
-   <div class="field" style="grid-column:1/-1"><label>Nota del docente</label><textarea id="verNote" placeholder="Es. manca documento, delega da integrare, autorizzazione da verificare...">${s.verificationNote||""}</textarea></div>
-  </div><br><button class="btn primary" onclick="saveVerification('${s.id}')">Salva verifica</button>
- </div></div>`;
-}
-async function saveVerification(id){
- const s=db.students.find(x=>String(x.id)===String(id)); if(!s)return;
- const status=document.querySelector("#verStatus").value;
- const note=document.querySelector("#verNote").value||"";
- const client=window.supabaseClient;
- if(!client){alert("Supabase non disponibile.");return;}
- const {error}=await client.from("students").update({verification_status:status}).eq("id",id);
- if(error){alert("Errore nel salvataggio: "+error.message);return;}
- s.verificationStatus=status;
- s.verificationNote=note;
- s.verifiedBy=state.user?.username||"";
- s.verifiedAt=new Date().toLocaleString("it-IT");
- await syncStaffFromSupabase();
- state.student=db.students.find(x=>String(x.id)===String(id))||s;
- state.page="verificationDetail";
- render();
- alert("Verifica salvata su Supabase.");
-}
-
-function today(){return `<div class="section"><h2>Oggi</h2>${db.students.filter(s=>s.early&&s.early!=="—").map(s=>`<div class="danger"><b>${s.name}</b> — ${s.early}</div>`).join("")||'<p class="muted">Nessuna uscita anticipata inserita.</p>'}</div>`}
-function users(){return `<div class="section"><h2>Utenti</h2><p class="muted">In questa versione di test ogni utente riceve una password iniziale comune. Al primo accesso la password deve essere cambiata e diventa personale.</p><button class="btn primary" onclick="addUser()">+ Aggiungi utente</button><div class="table" style="margin-top:16px"><div class="row head"><div>Nome utente</div><div>Nome</div><div>Ruolo</div><div>Password</div><div></div></div>${db.users.map(u=>`<div class="row"><div><b>${u.username}</b></div><div>${u.display}</div><div>${u.role}</div><div>${u.mustChange?"Iniziale":"Personale"}</div><div></div></div>`).join("")}</div></div>`}
-function addUser(){
- let username=prompt("Nome utente (es. nome.cognome)");
- if(!username)return;
- username=username.trim().toLowerCase();
- if(db.users.some(u=>u.username===username)){alert("Nome utente già esistente.");return;}
- let display=prompt("Nome e cognome")||username;
- let role=prompt("Ruolo: Docente / Famiglia / Admin")||"teacher";
- role=role.toLowerCase().includes("fam")?"family":role.toLowerCase().includes("admin")?"admin":"teacher";
- db.users.push({username,display,role,password:DEFAULT_PASSWORD,mustChange:true});
- save();render();
-}
-function passwordPage(){
- return `<div class="section"><h2>🔐 Modifica password</h2><p class="muted">La password iniziale è stata assegnata dalla scuola. Scegline ora una personale e non condividerla.</p>
- <form onsubmit="changePassword(event)"><div class="field"><label>Password attuale</label><input id="oldPw" type="password" required></div>
- <div class="field"><label>Nuova password</label><input id="newPw" type="password" minlength="8" required></div>
- <div class="field"><label>Conferma nuova password</label><input id="newPw2" type="password" minlength="8" required></div>
- <br><button class="btn primary">Salva nuova password</button></form></div>`;
-}
-async function changePassword(e){
- e.preventDefault();
- const oldPw=document.querySelector("#oldPw").value;
- const n1=document.querySelector("#newPw").value;
- const n2=document.querySelector("#newPw2").value;
- if(n1!==n2){alert("Le due nuove password non coincidono.");return;}
- if(n1.length<8){alert("La nuova password deve avere almeno 8 caratteri.");return;}
- const client=window.supabaseClient;
- if(!client || !state.authUser){alert("Sessione Supabase non disponibile.");return;}
- const {error:verify}=await client.auth.signInWithPassword({email:state.authUser.email,password:oldPw});
- if(verify){alert("La password attuale non è corretta.");return;}
- const {error}=await client.auth.updateUser({password:n1});
- if(error){alert("Impossibile modificare la password: "+error.message);return;}
- const {error:rpcError}=await client.rpc("complete_password_change");
- if(rpcError){alert("Password modificata, ma non è stato possibile completare lo stato del primo accesso. Controlla la funzione SQL indicata nelle istruzioni.");return;}
- state.user.must_change_password=false;
- state.page="home";
- alert("Password modificata correttamente.");
- render();
-}
-
-async function go(p){
- if(state.user?.must_change_password && p!=="password") p="password";
- state.page=p;
- state.student=null;
- if((p==="students"||p==="verification")&&(state.role==="teacher"||state.role==="admin")) await syncStaffFromSupabase();
- render();
-}
-async function logout(){
- if(window.supabaseClient) await window.supabaseClient.auth.signOut();
- state={role:null,page:"home",student:null,user:null,authUser:null,familyStudent:null};
- render();
-}render();
-restoreSession();
-document.addEventListener('click', function(ev){
-  const b=ev.target.closest('button'); if(!b) return;
-  setTimeout(function(){
-    const ef=document.getElementById('ef_delegateList');
-    if(ef && !ef.dataset.ready){
-      const heading=document.querySelector('h2');
-      const st=state.familyStudent || null;
-      if(st) renderEditFamilyStructuredRows(st);
-      ef.dataset.ready='1';
-    }
-  },20);
-});
+document.addEventListener(
+  "DOMContentLoaded",
+  async () => {
+    render();
+    await restoreSession();
+  }
+);
