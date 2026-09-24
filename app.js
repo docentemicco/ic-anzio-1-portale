@@ -385,7 +385,7 @@ function familyChildren(){
  return `<div class="section"><h2>👧 I miei figli</h2>
  <p class="muted">I figli associati al tuo account sono caricati da Supabase.</p><button class="btn" onclick="refreshFamily()">↻ Aggiorna dati</button>
  <button class="btn primary" onclick="go('addFamilyChild')">➕ Inserisci mio figlio</button>
- <div style="margin-top:16px">${rows.length ? rows.map(s=>`<div class="card"><h3>${s.name||'—'}</h3><p>${s.order||'—'} · ${s.campus||'—'} · Classe ${s.class||'—'}</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn primary" onclick="openFamilyStudent(${JSON.stringify(String(s.id))})">👁️ Apri scheda</button><button type="button" class="btn" onclick="editFamilyChild(${JSON.stringify(String(s.id))})">✏️ Modifica</button></div></div>`).join('') : `<div class="card"><h3>Nessun figlio inserito</h3><p>Utilizza il pulsante sopra per inserire il primo figlio.</p></div>`}</div>
+ <div style="margin-top:16px">${rows.length ? rows.map(s=>`<div class="card"><h3>${s.name||'—'}</h3><p>${s.order||'—'} · ${s.campus||'—'} · Classe ${s.class||'—'}</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn primary" data-family-open="${String(s.id)}">👁️ Apri scheda</button><button type="button" class="btn" data-family-edit="${String(s.id)}">✏️ Modifica</button></div></div>`).join('') : `<div class="card"><h3>Nessun figlio inserito</h3><p>Utilizza il pulsante sopra per inserire il primo figlio.</p></div>`}</div>
  </div>`;
 }
 async function refreshFamily(){
@@ -524,7 +524,7 @@ function familyStudent(){
  if(!s)return familyChildren();
  const meds=(s.medications||[]).map((m,i)=>`<div style="margin-top:8px"><b>💊 ${m.name||"Farmaco "+(i+1)}</b><br>Quando: ${m.time||"—"} · Dose: ${m.dose||"—"} · Modalità: ${m.method||"—"} · A scuola: ${m.school||"—"}</div>`).join("")||"Nessun farmaco indicato.";
  return `<div class="section"><button class="btn" onclick="go('familyChildren')">← I miei figli</button><h2>${s.name}</h2>
- <div class="card"><b>Stato comunicazione:</b> <span class="pill orange">${s.verificationStatus||"Da verificare"}</span><p class="muted">Le informazioni inserite dalla famiglia dovranno essere verificate dalla scuola nella versione definitiva.</p></div><div style="margin:12px 0"><button class="btn primary" onclick="editFamilyChild(${JSON.stringify(String(s.id))})">✏️ Modifica scheda</button></div>
+ <div class="card"><b>Stato comunicazione:</b> <span class="pill orange">${s.verificationStatus||"Da verificare"}</span><p class="muted">Le informazioni inserite dalla famiglia dovranno essere verificate dalla scuola nella versione definitiva.</p></div><div style="margin:12px 0"><button class="btn primary" data-family-edit="${String(s.id)}">✏️ Modifica scheda</button></div>
  <div class="grid">
   <div class="card"><b>Ordine</b><br>${s.order}</div><div class="card"><b>Plesso</b><br>${s.campus}</div><div class="card"><b>Classe</b><br>${s.class}</div>
   <div class="card"><b>📞 Recapito</b><br>${(s.parents||[]).map(g=>`${g.name||"—"}<br>📱 ${g.phone||"—"}<br>✉️ ${g.email||"—"}`).join("")||"—"}</div>
@@ -551,10 +551,12 @@ function formatEarly(items){
  return a.map(e=>typeof e==='string'?e:`<div style="margin:6px 0"><b>${e.type||"—"}</b> · ${e.date||"—"} ${e.time||""}<br>Persona autorizzata: ${e.person||"—"}</div>`).join('');
 }
 async function loadFamilyStudentById(id){
- const client=window.supabaseClient;
  const sid=String(id);
+ const local=(db.students||[]).find(x=>String(x.id)===sid && x._supabaseFamily);
+ if(local) return local;
+ const client=window.supabaseClient;
  if(!client || !state.authUser) return null;
- const {data:r,error}=await client.from("students").select("*").eq("id",sid).eq("family_user_id",state.authUser.id).single();
+ const {data:r,error}=await client.from("students").select("*").eq("id",sid).eq("family_user_id",state.authUser.id).maybeSingle();
  if(error || !r) return null;
  const [delRes,earlyRes,medRes]=await Promise.all([
    client.from("student_delegates").select("*").eq("student_id",sid),
@@ -574,27 +576,32 @@ async function loadFamilyStudentById(id){
    transport:r.transport?"Sì":"No",transportNote:r.transport_notes||"",docsInfo:r.document_info||"",note:r.notes||"",
    familySubmitted:!!r.family_submitted,verificationStatus:r.verification_status||"Da verificare"
  };
+ db.students=(db.students||[]).filter(x=>String(x.id)!==sid);
+ db.students.push(mapped);
  return mapped;
 }
 async function openFamilyStudent(id){
  if(state.role!=="family" || !state.authUser){alert("Sessione famiglia non disponibile.");return;}
- const s=await loadFamilyStudentById(id);
+ const sid=String(id);
+ const s=await loadFamilyStudentById(sid);
  if(!s){alert("Scheda alunno non trovata oppure non associata al tuo account.");return;}
  state.familyStudent=s; state.page="familyStudent"; render();
 }
 async function editFamilyChild(id){
  if(state.role!=="family" || !state.authUser){alert("Sessione famiglia non disponibile.");return;}
- const s=await loadFamilyStudentById(id);
+ const sid=String(id);
+ const s=await loadFamilyStudentById(sid);
  if(!s){alert("Scheda alunno non trovata oppure non associata al tuo account.");return;}
  state.familyStudent=s; state.page="familyEdit"; render();
 }
+
 function renderFamilyEdit(){
  const s=state.familyStudent;
  if(!s)return familyChildren();
  if(!s)return familyChildren();
  const g=(s.parents||[])[0]||{};
  const meds=(s.medications||[]);
- return `<div class="section"><button class="btn" onclick="openFamilyStudent(${JSON.stringify(String(s.id))})">← Scheda figlio</button><h2>✏️ Aggiorna informazioni — ${s.name}</h2>
+ return `<div class="section"><button class="btn" data-family-open="${String(s.id)}">← Scheda figlio</button><h2>✏️ Aggiorna informazioni — ${s.name}</h2>
  <p class="muted">Le modifiche saranno nuovamente inviate alla scuola e lo stato tornerà a “Da verificare”.</p>
  <form onsubmit="updateFamilyChild(event,${JSON.stringify(String(s.id))})"><div class="formgrid">
   <div class="field"><label>Nome</label><input id="ef_n" value="${s.name.split(" ")[0]||""}" required></div>
@@ -965,15 +972,18 @@ async function logout(){
  render();
 }render();
 restoreSession();
-document.addEventListener('click', function(ev){
-  const b=ev.target.closest('button'); if(!b) return;
+document.addEventListener("click", function(ev){
+  const open=ev.target.closest("[data-family-open]");
+  if(open){ ev.preventDefault(); openFamilyStudent(open.getAttribute("data-family-open")); return; }
+  const edit=ev.target.closest("[data-family-edit]");
+  if(edit){ ev.preventDefault(); editFamilyChild(edit.getAttribute("data-family-edit")); return; }
+  const b=ev.target.closest("button"); if(!b) return;
   setTimeout(function(){
-    const ef=document.getElementById('ef_delegateList');
+    const ef=document.getElementById("ef_delegateList");
     if(ef && !ef.dataset.ready){
-      const heading=document.querySelector('h2');
       const st=state.familyStudent || null;
       if(st) renderEditFamilyStructuredRows(st);
-      ef.dataset.ready='1';
+      ef.dataset.ready="1";
     }
   },20);
 });
