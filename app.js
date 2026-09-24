@@ -28,7 +28,7 @@ function ensureDemoUsers(){
 // ensureDemoUsers(); // v24: users are managed by Supabase Auth
 const orders=["Infanzia","Primaria","Secondaria di I grado"],campuses=["Plesso Centrale","Succursale","Quartiere Europa","Saragat"];
 function save(){localStorage.setItem(KEY,JSON.stringify(db))}
-function header(){return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V39</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${state.user?.display||""}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
+function header(){const display=state.user?.display || [state.user?.first_name,state.user?.last_name].filter(Boolean).join(" ").trim() || state.user?.username || state.authUser?.email?.split("@")[0] || "Utente";return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V40</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${display}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
 function render(){
   if(!state.role){app.innerHTML=header()+login();return}
   if(state.user?.must_change_password && state.page!=="password") state.page="password";
@@ -37,11 +37,11 @@ function render(){
 function login(){
  return `<div class="login">
  <h2>Accesso al portale</h2>
- <p class="muted">Scegli l'area di accesso e inserisci le credenziali fornite dalla scuola.</p>
+ <p class="muted">Scegli l'area di accesso e inserisci le credenziali.</p>
  <div class="choices">
    <button class="choice" onclick="showLogin('teacher')">
      <b>👩‍🏫 AREA DOCENTI</b>
-     <span class="muted">Accesso a classi, alunni, documenti e informazioni operative.</span>
+     <span class="muted">Accesso a classi, alunni, verifiche e informazioni operative.</span>
    </button>
    <button class="choice" onclick="showLogin('family')">
      <b>👨‍👩‍👧 AREA FAMIGLIE</b>
@@ -49,6 +49,11 @@ function login(){
    </button>
  </div>
  <div id="loginBox" style="margin-top:18px"></div>
+ <div class="section" style="margin-top:18px">
+   <b>Nuovo utente?</b>
+   <p class="muted" style="margin:6px 0 10px">Le famiglie possono creare autonomamente il proprio account. I docenti devono inserire il codice di registrazione riservato.</p>
+   <button class="btn primary" onclick="showRegister()">➕ Crea un account</button>
+ </div>
  <div class="section" style="margin-top:18px">
    <b>Credenziali demo</b><br>
    Amministratore: <code>admin</code><br>
@@ -62,15 +67,99 @@ function showLogin(area){
  const box=document.querySelector("#loginBox");
  const isFamily=area==="family";
  box.innerHTML=`<div class="card">
-   <h3>${isFamily?"👨‍👩‍👧 Accesso Famiglie":"👩‍🏫 Accesso Docenti"}</h3>
+   <h3>${isFamily?"👨‍👩‍👧 Accesso Famiglie":"👩‍🏫 Accesso Docenti / Amministratore"}</h3>
    <form onsubmit="doLogin(event,'${area}')">
-    <div class="field"><label>${isFamily?"Nome utente del figlio":"Nome utente del docente"}</label><input id="loginUser" placeholder="${isFamily?"es. luca.rossi":"es. mario.rossi"}" required></div>
+    <div class="field"><label>Email oppure nome utente</label><input id="loginUser" placeholder="${isFamily?"es. luca.rossi oppure email":"es. mario.rossi oppure email"}" required></div>
     <div class="field"><label>Password</label><input id="loginPass" type="password" required></div>
-    <br><button class="btn primary">Accedi all'area ${isFamily?"Famiglie":"Docenti"}</button>
+    <br><button class="btn primary">Accedi</button>
    </form>
    <p id="loginMsg" class="danger" style="display:none;margin-top:12px"></p>
  </div>`;
  document.querySelector("#loginUser").focus();
+}
+function showRegister(){
+ const box=document.querySelector("#loginBox");
+ box.innerHTML=`<div class="card">
+  <h3>➕ Crea un account</h3>
+  <p class="muted">Compila i dati. L'account viene creato direttamente in Supabase.</p>
+  <form onsubmit="handleRegistration(event)">
+   <div class="formgrid">
+    <div class="field"><label>Nome *</label><input id="registerFirstName" required></div>
+    <div class="field"><label>Cognome *</label><input id="registerLastName" required></div>
+    <div class="field"><label>Email *</label><input id="registerEmail" type="email" required></div>
+    <div class="field"><label>Tipo account *</label><select id="registerRole" onchange="toggleTeacherCode()" required><option value="family">👨‍👩‍👧 Famiglia</option><option value="teacher">👩‍🏫 Docente</option></select></div>
+    <div class="field"><label>Password *</label><input id="registerPassword" type="password" minlength="8" required></div>
+    <div class="field"><label>Conferma password *</label><input id="registerPasswordConfirm" type="password" minlength="8" required></div>
+   </div>
+   <div id="teacherCodeBox" class="field" style="display:none;margin-top:12px"><label>Codice registrazione docenti *</label><input id="teacherCode" autocomplete="off" placeholder="Codice fornito dalla scuola"></div>
+   <label style="display:flex;gap:8px;align-items:flex-start;margin-top:12px"><input id="registerPrivacy" type="checkbox" required style="margin-top:4px"> <span>Dichiaro di aver preso visione dell'informativa e autorizzo il trattamento dei dati necessari alla gestione dell'account.</span></label>
+   <p id="registerMsg" style="display:none;margin-top:12px"></p>
+   <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" type="submit">Crea account</button><button class="btn" type="button" onclick="showLogin('family')">Torna all'accesso</button></div>
+  </form>
+ </div>`;
+ toggleTeacherCode();
+}
+function toggleTeacherCode(){
+ const role=document.querySelector('#registerRole')?.value;
+ const box=document.querySelector('#teacherCodeBox');
+ const input=document.querySelector('#teacherCode');
+ if(!box)return;
+ const teacher=role==='teacher';
+ box.style.display=teacher?'block':'none';
+ if(input) input.required=teacher;
+}
+function setRegisterMessage(message,type='error'){
+ const el=document.querySelector('#registerMsg');
+ if(!el)return;
+ el.textContent=message;
+ el.style.display='block';
+ el.style.color=type==='success'?'#176b36':'#a33';
+}
+async function handleRegistration(event){
+ event.preventDefault();
+ const firstName=document.querySelector('#registerFirstName').value.trim();
+ const lastName=document.querySelector('#registerLastName').value.trim();
+ const email=document.querySelector('#registerEmail').value.trim().toLowerCase();
+ const password=document.querySelector('#registerPassword').value;
+ const confirm=document.querySelector('#registerPasswordConfirm').value;
+ const role=document.querySelector('#registerRole').value;
+ const teacherCode=document.querySelector('#teacherCode')?.value.trim()||'';
+ if(password!==confirm){setRegisterMessage('Le due password non coincidono.');return;}
+ if(password.length<8){setRegisterMessage('La password deve contenere almeno 8 caratteri.');return;}
+ if(role==='teacher'&&!teacherCode){setRegisterMessage('Inserisci il codice di registrazione docenti.');return;}
+ const client=window.supabaseClient;
+ if(!client){setRegisterMessage('Connessione Supabase non disponibile.');return;}
+ const button=event.submitter;
+ if(button){button.disabled=true;button.textContent='Creazione account...';}
+ try{
+   if(role==='teacher'){
+     const {data:valid,error:codeError}=await client.rpc('check_teacher_registration_code',{p_code:teacherCode});
+     if(codeError) throw new Error('Impossibile verificare il codice docente.');
+     if(valid!==true) throw new Error('Il codice di registrazione docenti non è corretto.');
+   }
+   const {data,error}=await client.auth.signUp({
+     email,password,
+     options:{data:{first_name:firstName,last_name:lastName,requested_role:role,teacher_code:role==='teacher'?teacherCode:null}}
+   });
+   if(error) throw new Error(error.message||'Errore durante la registrazione.');
+   if(!data?.user) throw new Error('Registrazione non completata.');
+   if(!data.session){
+     setRegisterMessage('Registrazione completata. Se richiesto, controlla la tua email per attivare l’account. Poi torna all’accesso.','success');
+     document.querySelector('#registerFirstName').value='';
+     document.querySelector('#registerLastName').value='';
+     document.querySelector('#registerEmail').value='';
+     document.querySelector('#registerPassword').value='';
+     document.querySelector('#registerPasswordConfirm').value='';
+     return;
+   }
+   await restoreSession();
+   if(state.role){alert('Account creato e accesso effettuato.');}
+ }catch(err){
+   console.error(err);
+   setRegisterMessage(err.message||'Errore durante la registrazione.');
+ }finally{
+   if(button){button.disabled=false;button.textContent='Crea account';}
+ }
 }
 
 async function syncFamilyFromSupabase(){
@@ -161,47 +250,37 @@ async function syncStaffFromSupabase(){
 
 async function doLogin(e,area){
  e.preventDefault();
- const u=(document.querySelector("#loginUser").value||"").trim().toLowerCase();
- const pw=document.querySelector("#loginPass").value;
- const wantedRole=area==="family"?"family":null;
+ const value=(document.querySelector('#loginUser').value||'').trim().toLowerCase();
+ const pw=document.querySelector('#loginPass').value;
+ const wantedRole=area==='family'?'family':null;
  const emailMap={
-   "admin":"admin@ic-anzio-i.test",
-   "mario.rossi":"mario.rossi@ic-anzio-i.test",
-   "anna.bianchi":"anna.bianchi@ic-anzio-i.test",
-   "luca.rossi":"luca.rossi@ic-anzio-i.test",
-   "giulia.verdi":"giulia.verdi@ic-anzio-i.test"
+   'admin':'admin@ic-anzio-i.test',
+   'mario.rossi':'mario.rossi@ic-anzio-i.test',
+   'anna.bianchi':'anna.bianchi@ic-anzio-i.test',
+   'luca.rossi':'luca.rossi@ic-anzio-i.test',
+   'giulia.verdi':'giulia.verdi@ic-anzio-i.test'
  };
- const email=emailMap[u] || `${u}@ic-anzio-i.test`;
+ const email=value.includes('@')?value:(emailMap[value]||`${value}@ic-anzio-i.test`);
  const client=window.supabaseClient;
- if(!client){alert("Connessione Supabase non disponibile.");return;}
+ if(!client){alert('Connessione Supabase non disponibile.');return;}
  const {data,error}=await client.auth.signInWithPassword({email,password:pw});
  if(error){
-   const m=document.querySelector("#loginMsg");
-   m.textContent="Credenziali non corrette o account non ancora creato in Supabase.";
-   m.style.display="block"; return;
+   const m=document.querySelector('#loginMsg');
+   if(m){m.textContent='Credenziali non corrette, account non attivo oppure email non confermata.';m.style.display='block';}
+   return;
  }
  const uid=data.user.id;
- const {data:profile,error:pe}=await client.from("user_profiles").select("*").eq("id",uid).single();
- if(pe || !profile){
+ const {data:profile,error:pe}=await client.from('user_profiles').select('*').eq('id',uid).single();
+ if(pe||!profile){await client.auth.signOut();const m=document.querySelector('#loginMsg');if(m){m.textContent='Account autenticato ma profilo scolastico non configurato.';m.style.display='block';}return;}
+ if((wantedRole==='family'&&profile.role!=='family')||(wantedRole===null&&profile.role==='family')){
    await client.auth.signOut();
-   const m=document.querySelector("#loginMsg");
-   m.textContent="Account autenticato ma profilo scolastico non configurato.";
-   m.style.display="block"; return;
+   const m=document.querySelector('#loginMsg');
+   if(m){m.textContent=area==='family'?'Questo account non è un account famiglia.':'Questo account non è un account docente/amministratore.';m.style.display='block';}
+   return;
  }
- if(wantedRole && profile.role!=="family" || !wantedRole && profile.role==="family"){
-   await client.auth.signOut();
-   const m=document.querySelector("#loginMsg");
-   m.textContent=area==="family"?"Questo account non è un account famiglia.":"Questo account non è un account docente/amministratore.";
-   m.style.display="block"; return;
- }
- state.user=profile;
- state.role=profile.role;
- state.page="home";
- state.student=null;
- state.familyStudent=null;
- state.authUser=data.user;
+ state.user=profile;state.role=profile.role;state.page='home';state.student=null;state.familyStudent=null;state.authUser=data.user;
  if(profile.role==='family') await syncFamilyFromSupabase();
- if(profile.role==='teacher' || profile.role==='admin') await syncStaffFromSupabase();
+ if(profile.role==='teacher'||profile.role==='admin') await syncStaffFromSupabase();
  render();
 }
 
@@ -247,7 +326,7 @@ function page(){if(state.page==='home')return home();if(state.page==='students')
 function home(){
  if(state.role==="family") {
    const count=(state.user.children||[]).length;
-   return `<div class="section"><h2>👨‍👩‍👧 Area Famiglie</h2><p>Benvenuto/a, <b>${state.user.display}</b>.</p><p class="muted">Account: ${state.user.username} · Password personale attiva.</p>
+   return `<div class="section"><h2>👨‍👩‍👧 Area Famiglie</h2><p>Benvenuto/a, <b>${state.user.display || [state.user.first_name,state.user.last_name].filter(Boolean).join(" ").trim() || state.user.username || state.authUser?.email?.split("@")[0] || "Utente"}</b>.</p><p class="muted">Account: ${state.user.username} · Password personale attiva.</p>
    <div class="card"><h3>👧 I miei figli</h3><p>${count ? `Hai inserito ${count} ${count===1?"figlio":"figli"} nel tuo account.` : "Non hai ancora inserito un figlio."}</p>
    <button class="btn primary" onclick="go('familyChildren')">${count?"Gestisci i miei figli":"➕ Inserisci mio figlio"}</button></div>
    <div class="card" style="margin-top:14px"><h3>📄 Documenti</h3><p class="muted">Potrai consultare e caricare la documentazione relativa ai tuoi figli.</p><button class="btn" onclick="go('familyDocs')">Apri documenti</button></div>
