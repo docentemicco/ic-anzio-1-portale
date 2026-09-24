@@ -1,7 +1,7 @@
 const KEY="anzio1_test_v11";
 const DEFAULT_PASSWORD="Anzio2026";
 let db=JSON.parse(localStorage.getItem(KEY)||'{"students":[],"documents":[],"users":[]}');
-let state={role:null,page:"home",student:null,user:null};
+let state={role:null,page:"home",student:null,user:null,authUser:null,familyStudent:null,adminUsers:[],adminStudents:[]};
 function ensureDemoUsers(){
   if(!Array.isArray(db.users)) db.users=[];
   const demo=[
@@ -28,7 +28,7 @@ function ensureDemoUsers(){
 // ensureDemoUsers(); // v24: users are managed by Supabase Auth
 const orders=["Infanzia","Primaria","Secondaria di I grado"],campuses=["Plesso Centrale","Succursale","Quartiere Europa","Saragat"];
 function save(){localStorage.setItem(KEY,JSON.stringify(db))}
-function header(){const display=state.user?.display || [state.user?.first_name,state.user?.last_name].filter(Boolean).join(" ").trim() || state.user?.username || state.authUser?.email?.split("@")[0] || "Utente";return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V42</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${display}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
+function header(){const display=state.user?.display || [state.user?.first_name,state.user?.last_name].filter(Boolean).join(" ").trim() || state.user?.username || state.authUser?.email?.split("@")[0] || "Utente";return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V46</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${display}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
 function render(){
   if(!state.role){app.innerHTML=header()+login();return}
   if(state.user?.must_change_password && state.page!=="password") state.page="password";
@@ -315,7 +315,11 @@ async function doLogin(e,area){
    return;
  }
  const uid=data.user.id;
- const {data:profile,error:pe}=await client.from('user_profiles').select('*').eq('id',uid).single();
+ let {data:profile,error:pe}=await client.from('user_profiles').select('*').eq('id',uid).single();
+ if((pe||!profile) && value==='admin'){
+   const boot=await client.rpc('ensure_admin_profile');
+   if(!boot.error){ const again=await client.from('user_profiles').select('*').eq('id',uid).single(); profile=again.data; pe=again.error; }
+ }
  if(pe||!profile){await client.auth.signOut();const m=document.querySelector('#loginMsg');if(m){m.textContent='Account autenticato ma profilo scolastico non configurato.';m.style.display='block';}return;}
  if((wantedRole==='family'&&profile.role!=='family')||(wantedRole===null&&profile.role==='family')){
    await client.auth.signOut();
@@ -364,10 +368,11 @@ function side(){
    <button class="nav ${state.page==='verification'?'active':''}" onclick="go('verification')">🔎 Verifiche famiglie</button>
    <button class="nav ${state.page==='today'?'active':''}" onclick="go('today')">📅 Oggi</button>
    <button class="nav ${state.page==='users'?'active':''}" onclick="go('users')">👥 Utenti</button>
+   ${state.role==='admin'?`<button class="nav ${state.page==='adminManagement'?'active':''}" onclick="go('adminManagement')">⚙️ Gestione amministrativa</button>`:''}
    <button class="nav ${state.page==='password'?'active':''}" onclick="go('password')">🔐 Password</button>
  </aside>`;
 }
-function page(){if(state.page==='home')return home();if(state.page==='students')return students();if(state.page==='add')return add();if(state.page==='docs')return docs();if(state.page==='verification')return verification();if(state.page==='today')return today();if(state.page==='users')return users();if(state.page==='student')return student();if(state.page==='verificationDetail')return verificationDetail();if(state.page==='password')return passwordPage();if(state.page==='familyChildren')return familyChildren();if(state.page==='addFamilyChild')return addFamilyChild();if(state.page==='familyDocs')return familyDocs();if(state.page==='familyStudent')return familyStudent();if(state.page==='familyEdit')return renderFamilyEdit();return home()}
+function page(){if(state.page==='home')return home();if(state.page==='students')return students();if(state.page==='add')return add();if(state.page==='docs')return docs();if(state.page==='verification')return verification();if(state.page==='today')return today();if(state.page==='users')return users();if(state.page==='adminManagement')return adminManagement();if(state.page==='student')return student();if(state.page==='verificationDetail')return verificationDetail();if(state.page==='password')return passwordPage();if(state.page==='familyChildren')return familyChildren();if(state.page==='addFamilyChild')return addFamilyChild();if(state.page==='familyDocs')return familyDocs();if(state.page==='familyStudent')return familyStudent();if(state.page==='familyEdit')return renderFamilyEdit();return home()}
 function home(){
  if(state.role==="family") {
    const count=(state.user.children||[]).length;
@@ -919,6 +924,47 @@ async function saveVerification(id){
 }
 
 function today(){return `<div class="section"><h2>Oggi</h2>${db.students.filter(s=>s.early&&s.early!=="—").map(s=>`<div class="danger"><b>${s.name}</b> — ${s.early}</div>`).join("")||'<p class="muted">Nessuna uscita anticipata inserita.</p>'}</div>`}
+
+async function loadAdminManagement(){
+ const client=window.supabaseClient;
+ if(!client || state.role!=='admin') return;
+ const [u,s]=await Promise.all([
+   client.from('user_profiles').select('id,username,first_name,last_name,role,active,created_at').order('created_at',{ascending:true}),
+   client.from('students').select('id,first_name,last_name,family_user_id,school_year,verification_status').order('created_at',{ascending:true})
+ ]);
+ if(u.error){console.error(u.error);alert('Impossibile caricare gli utenti: '+u.error.message);return;}
+ if(s.error){console.error(s.error);alert('Impossibile caricare gli alunni: '+s.error.message);return;}
+ state.adminUsers=u.data||[];
+ state.adminStudents=s.data||[];
+}
+function adminManagement(){
+ if(state.role!=='admin') return '<div class="section"><h2>Accesso non autorizzato</h2></div>';
+ const families=state.adminUsers.filter(u=>u.role==='family');
+ const teachers=state.adminUsers.filter(u=>u.role==='teacher');
+ const childRows=state.adminStudents;
+ const nameOf=u=>[u.first_name,u.last_name].filter(Boolean).join(' ')||u.username||'—';
+ return `<div class="section"><h2>⚙️ Gestione amministrativa</h2><p class="muted">Da qui l'amministratore può visualizzare e rimuovere gli account famiglia e i relativi figli. Le eliminazioni sono definitive.</p>
+ <div class="grid"><div class="card"><b>Famiglie</b><div class="metric">${families.length}</div></div><div class="card"><b>Docenti</b><div class="metric">${teachers.length}</div></div><div class="card"><b>Alunni</b><div class="metric">${childRows.length}</div></div></div></div>
+ <div class="section"><h3>👨‍👩‍👧 Profili famiglia</h3>${families.length?families.map(u=>{const kids=childRows.filter(s=>s.family_user_id===u.id);return `<div class="card" style="margin:10px 0"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap"><div><b>${nameOf(u)}</b><br><span class="muted">Username: ${u.username||'—'} · ${u.active===false?'Disattivo':'Attivo'}</span><br><span class="muted">Figli associati: ${kids.length}</span>${kids.length?`<div style="margin-top:8px">${kids.map(s=>`<div style="padding:5px 0">👧 ${[s.first_name,s.last_name].filter(Boolean).join(' ')} <button class="btn" style="margin-left:8px" onclick="adminDeleteStudent('${s.id}')">🗑️ Elimina figlio</button></div>`).join('')}</div>`:''}</div><button class="btn danger" onclick="adminDeleteFamily('${u.id}','${String(nameOf(u)).replace(/'/g,"\\'")}')">🗑️ Elimina famiglia</button></div></div>`}).join(''):`<div class="card">Nessun profilo famiglia.</div>`}</div>
+ <div class="section"><h3>👩‍🏫 Docenti</h3>${teachers.length?teachers.map(u=>`<div class="card" style="margin:8px 0"><b>${nameOf(u)}</b> · ${u.username||'—'} · ${u.active===false?'Disattivo':'Attivo'}</div>`).join(''):`<div class="card">Nessun docente.</div>`}</div>`;
+}
+async function adminDeleteStudent(id){
+ if(state.role!=='admin')return;
+ if(!confirm('Eliminare definitivamente questo alunno e le informazioni associate?'))return;
+ const client=window.supabaseClient;
+ const {error}=await client.rpc('admin_delete_student',{p_student_id:id});
+ if(error){alert('Impossibile eliminare l’alunno: '+error.message);return;}
+ await loadAdminManagement(); await syncStaffFromSupabase(); state.page='adminManagement'; render(); alert('Alunno eliminato.');
+}
+async function adminDeleteFamily(id,name){
+ if(state.role!=='admin')return;
+ if(!confirm(`Eliminare definitivamente il profilo famiglia di ${name} e tutti i figli associati?`))return;
+ const client=window.supabaseClient;
+ const {error}=await client.rpc('admin_delete_family',{p_user_id:id});
+ if(error){alert('Impossibile eliminare il profilo famiglia: '+error.message);return;}
+ await loadAdminManagement(); await syncStaffFromSupabase(); state.page='adminManagement'; render(); alert('Profilo famiglia e dati associati eliminati.');
+}
+
 function users(){return `<div class="section"><h2>Utenti</h2><p class="muted">In questa versione di test ogni utente riceve una password iniziale comune. Al primo accesso la password deve essere cambiata e diventa personale.</p><button class="btn primary" onclick="addUser()">+ Aggiungi utente</button><div class="table" style="margin-top:16px"><div class="row head"><div>Nome utente</div><div>Nome</div><div>Ruolo</div><div>Password</div><div></div></div>${db.users.map(u=>`<div class="row"><div><b>${u.username}</b></div><div>${u.display}</div><div>${u.role}</div><div>${u.mustChange?"Iniziale":"Personale"}</div><div></div></div>`).join("")}</div></div>`}
 function addUser(){
  let username=prompt("Nome utente (es. nome.cognome)");
@@ -964,11 +1010,12 @@ async function go(p){
  state.page=p;
  state.student=null;
  if((p==="students"||p==="verification")&&(state.role==="teacher"||state.role==="admin")) await syncStaffFromSupabase();
+ if(p==="adminManagement" && state.role==="admin") await loadAdminManagement();
  render();
 }
 async function logout(){
  if(window.supabaseClient) await window.supabaseClient.auth.signOut();
- state={role:null,page:"home",student:null,user:null,authUser:null,familyStudent:null};
+ state={role:null,page:"home",student:null,user:null,authUser:null,familyStudent:null,adminUsers:[],adminStudents:[]};
  render();
 }render();
 restoreSession();
