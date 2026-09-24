@@ -28,7 +28,7 @@ function ensureDemoUsers(){
 // ensureDemoUsers(); // v24: users are managed by Supabase Auth
 const orders=["Infanzia","Primaria","Secondaria di I grado"],campuses=["Plesso Centrale","Succursale","Quartiere Europa","Saragat"];
 function save(){localStorage.setItem(KEY,JSON.stringify(db))}
-function header(){const display=state.user?.display || [state.user?.first_name,state.user?.last_name].filter(Boolean).join(" ").trim() || state.user?.username || state.authUser?.email?.split("@")[0] || "Utente";return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V40</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${display}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
+function header(){const display=state.user?.display || [state.user?.first_name,state.user?.last_name].filter(Boolean).join(" ").trim() || state.user?.username || state.authUser?.email?.split("@")[0] || "Utente";return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V42</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${display}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
 function render(){
   if(!state.role){app.innerHTML=header()+login();return}
   if(state.user?.must_change_password && state.page!=="password") state.page="password";
@@ -71,12 +71,26 @@ function showLogin(area){
    <form onsubmit="doLogin(event,'${area}')">
     <div class="field"><label>Email oppure nome utente</label><input id="loginUser" placeholder="${isFamily?"es. luca.rossi oppure email":"es. mario.rossi oppure email"}" required></div>
     <div class="field"><label>Password</label><input id="loginPass" type="password" required></div>
-    <br><button class="btn primary">Accedi</button>
+    <br><button class="btn primary">Accedi</button> <button type="button" class="btn" onclick="forgotPassword('${area}')">🔑 Password dimenticata</button>
    </form>
    <p id="loginMsg" class="danger" style="display:none;margin-top:12px"></p>
  </div>`;
  document.querySelector("#loginUser").focus();
 }
+function normalizeUsernamePart(value){
+ return String(value||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g,".").replace(/^\.|\.$/g,"");
+}
+function buildUsername(firstName,lastName){
+ const parts=[...String(firstName||"").trim().split(/\s+/),...String(lastName||"").trim().split(/\s+/)].map(normalizeUsernamePart).filter(Boolean);
+ return parts.join(".");
+}
+function updateGeneratedUsername(){
+ const first=document.querySelector("#registerFirstName")?.value||"";
+ const last=document.querySelector("#registerLastName")?.value||"";
+ const out=document.querySelector("#generatedUsername");
+ if(out) out.value=buildUsername(first,last);
+}
+
 function showRegister(){
  const box=document.querySelector("#loginBox");
  box.innerHTML=`<div class="card">
@@ -87,6 +101,7 @@ function showRegister(){
     <div class="field"><label>Nome *</label><input id="registerFirstName" required></div>
     <div class="field"><label>Cognome *</label><input id="registerLastName" required></div>
     <div class="field"><label>Email *</label><input id="registerEmail" type="email" required></div>
+    <div class="field"><label>Nome utente (automatico)</label><input id="generatedUsername" readonly placeholder="es. mario.rossi"></div>
     <div class="field"><label>Tipo account *</label><select id="registerRole" onchange="toggleTeacherCode()" required><option value="family">👨‍👩‍👧 Famiglia</option><option value="teacher">👩‍🏫 Docente</option></select></div>
     <div class="field"><label>Password *</label><input id="registerPassword" type="password" minlength="8" required></div>
     <div class="field"><label>Conferma password *</label><input id="registerPasswordConfirm" type="password" minlength="8" required></div>
@@ -124,6 +139,8 @@ async function handleRegistration(event){
  const confirm=document.querySelector('#registerPasswordConfirm').value;
  const role=document.querySelector('#registerRole').value;
  const teacherCode=document.querySelector('#teacherCode')?.value.trim()||'';
+ const username=buildUsername(firstName,lastName);
+ if(!username){setRegisterMessage('Inserisci nome e cognome per generare il nome utente.');return;}
  if(password!==confirm){setRegisterMessage('Le due password non coincidono.');return;}
  if(password.length<8){setRegisterMessage('La password deve contenere almeno 8 caratteri.');return;}
  if(role==='teacher'&&!teacherCode){setRegisterMessage('Inserisci il codice di registrazione docenti.');return;}
@@ -139,12 +156,12 @@ async function handleRegistration(event){
    }
    const {data,error}=await client.auth.signUp({
      email,password,
-     options:{data:{first_name:firstName,last_name:lastName,requested_role:role,teacher_code:role==='teacher'?teacherCode:null}}
+     options:{data:{first_name:firstName,last_name:lastName,username,requested_role:role,teacher_code:role==='teacher'?teacherCode:null}}
    });
    if(error) throw new Error(error.message||'Errore durante la registrazione.');
    if(!data?.user) throw new Error('Registrazione non completata.');
    if(!data.session){
-     setRegisterMessage('Registrazione completata. Se richiesto, controlla la tua email per attivare l’account. Poi torna all’accesso.','success');
+     setRegisterMessage(`Account creato. Il tuo nome utente è: ${username}. Conserva questo dato: potrai usarlo anche per accedere.`, 'success');
      document.querySelector('#registerFirstName').value='';
      document.querySelector('#registerLastName').value='';
      document.querySelector('#registerEmail').value='';
@@ -248,6 +265,22 @@ async function syncStaffFromSupabase(){
  }));
 }
 
+async function forgotPassword(area){
+ const value=(document.querySelector('#loginUser')?.value||'').trim().toLowerCase();
+ if(!value){alert('Inserisci prima email oppure nome utente.');return;}
+ const client=window.supabaseClient;
+ if(!client){alert('Connessione Supabase non disponibile.');return;}
+ let email=value;
+ if(!value.includes('@')){
+   const {data,error}=await client.rpc('get_login_email',{p_username:value});
+   if(error||!data){alert('Nome utente non trovato.');return;}
+   email=data;
+ }
+ const {error}=await client.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin});
+ if(error){alert('Impossibile inviare il recupero password: '+error.message);return;}
+ alert("Se l'indirizzo è abilitato alla ricezione delle email di Supabase, riceverai il link per reimpostare la password.");
+}
+
 async function doLogin(e,area){
  e.preventDefault();
  const value=(document.querySelector('#loginUser').value||'').trim().toLowerCase();
@@ -260,9 +293,21 @@ async function doLogin(e,area){
    'luca.rossi':'luca.rossi@ic-anzio-i.test',
    'giulia.verdi':'giulia.verdi@ic-anzio-i.test'
  };
- const email=value.includes('@')?value:(emailMap[value]||`${value}@ic-anzio-i.test`);
  const client=window.supabaseClient;
  if(!client){alert('Connessione Supabase non disponibile.');return;}
+ let email=value;
+ if(!value.includes('@')){
+   if(emailMap[value]) email=emailMap[value];
+   else {
+     const {data:loginEmail,error:loginEmailError}=await client.rpc('get_login_email',{p_username:value});
+     if(loginEmailError || !loginEmail){
+       const m=document.querySelector('#loginMsg');
+       if(m){m.textContent='Nome utente non trovato.';m.style.display='block';}
+       return;
+     }
+     email=loginEmail;
+   }
+ }
  const {data,error}=await client.auth.signInWithPassword({email,password:pw});
  if(error){
    const m=document.querySelector('#loginMsg');
@@ -335,11 +380,12 @@ function home(){
  return `<div class="section"><h2>👩‍🏫 Area Docenti</h2><p class="muted">Dashboard di prova per docenti e amministratori.</p><p class="muted">Account: ${state.user.username} · Ruolo: ${state.user.role==="admin"?"Amministratore":"Docente"} · Password personale attiva.</p></div><div class="grid"><div class="card"><span class="muted">Alunni</span><div class="metric">${db.students.length}</div></div><div class="card"><span class="muted">Documenti</span><div class="metric">${db.documents.length}</div></div><div class="card"><span class="muted">Utenti</span><div class="metric">${db.users.length}</div></div><div class="card"><span class="muted">Plessi</span><div class="metric">${campuses.length}</div></div></div><div class="section" style="margin-top:16px"><h3>⚠️ Prima del passaggio reale</h3><p>Questa build usa localStorage. Serve esclusivamente per provare il funzionamento e raccogliere modifiche. Non usare dati reali di minori.</p><p><b>Livelli informativi:</b> 🟢 operativo · 🟠 autorizzazione · 🔴 sanitario riservato.</p></div>`;
 }
 function familyChildren(){
- const children=state.user.children||[];
+ const children=Array.isArray(state.user?.children)?state.user.children.map(String):[];
+ const rows=(db.students||[]).filter(s=>children.includes(String(s.id)));
  return `<div class="section"><h2>👧 I miei figli</h2>
- <p class="muted">I figli associati al tuo account sono caricati dal database scolastico. L’inserimento/modifica completo su Supabase sarà attivato nel passaggio successivo.</p><button class="btn" onclick="refreshFamily()">↻ Aggiorna dati</button>
+ <p class="muted">I figli associati al tuo account sono caricati da Supabase.</p><button class="btn" onclick="refreshFamily()">↻ Aggiorna dati</button>
  <button class="btn primary" onclick="go('addFamilyChild')">➕ Inserisci mio figlio</button>
- <div style="margin-top:16px">${children.length ? children.map((id,i)=>{const s=db.students.find(x=>x.id===id); return s?`<div class="card"><h3>${s.name}</h3><p>${s.order} · ${s.campus} · Classe ${s.class}</p><button class="btn primary" onclick="openFamilyStudent(${s.id})">Apri scheda</button></div>`:""}).join("") : `<div class="card"><h3>Nessun figlio inserito</h3><p>Utilizza il pulsante sopra per inserire il primo figlio.</p></div>`}</div>
+ <div style="margin-top:16px">${rows.length ? rows.map(s=>`<div class="card"><h3>${s.name||'—'}</h3><p>${s.order||'—'} · ${s.campus||'—'} · Classe ${s.class||'—'}</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn primary" onclick="openFamilyStudent(${JSON.stringify(String(s.id))})">👁️ Apri scheda</button><button type="button" class="btn" onclick="editFamilyChild(${JSON.stringify(String(s.id))})">✏️ Modifica</button></div></div>`).join('') : `<div class="card"><h3>Nessun figlio inserito</h3><p>Utilizza il pulsante sopra per inserire il primo figlio.</p></div>`}</div>
  </div>`;
 }
 async function refreshFamily(){
@@ -478,7 +524,7 @@ function familyStudent(){
  if(!s)return familyChildren();
  const meds=(s.medications||[]).map((m,i)=>`<div style="margin-top:8px"><b>💊 ${m.name||"Farmaco "+(i+1)}</b><br>Quando: ${m.time||"—"} · Dose: ${m.dose||"—"} · Modalità: ${m.method||"—"} · A scuola: ${m.school||"—"}</div>`).join("")||"Nessun farmaco indicato.";
  return `<div class="section"><button class="btn" onclick="go('familyChildren')">← I miei figli</button><h2>${s.name}</h2>
- <div class="card"><b>Stato comunicazione:</b> <span class="pill orange">${s.verificationStatus||"Da verificare"}</span><p class="muted">Le informazioni inserite dalla famiglia dovranno essere verificate dalla scuola nella versione definitiva.</p></div><div style="margin:12px 0"><button class="btn primary" onclick="editFamilyChild(${s.id})">✏️ Modifica scheda</button></div>
+ <div class="card"><b>Stato comunicazione:</b> <span class="pill orange">${s.verificationStatus||"Da verificare"}</span><p class="muted">Le informazioni inserite dalla famiglia dovranno essere verificate dalla scuola nella versione definitiva.</p></div><div style="margin:12px 0"><button class="btn primary" onclick="editFamilyChild(${JSON.stringify(String(s.id))})">✏️ Modifica scheda</button></div>
  <div class="grid">
   <div class="card"><b>Ordine</b><br>${s.order}</div><div class="card"><b>Plesso</b><br>${s.campus}</div><div class="card"><b>Classe</b><br>${s.class}</div>
   <div class="card"><b>📞 Recapito</b><br>${(s.parents||[]).map(g=>`${g.name||"—"}<br>📱 ${g.phone||"—"}<br>✉️ ${g.email||"—"}`).join("")||"—"}</div>
@@ -505,18 +551,20 @@ function formatEarly(items){
  return a.map(e=>typeof e==='string'?e:`<div style="margin:6px 0"><b>${e.type||"—"}</b> · ${e.date||"—"} ${e.time||""}<br>Persona autorizzata: ${e.person||"—"}</div>`).join('');
 }
 function openFamilyStudent(id){
- const s=db.students.find(x=>x.id===id);
+ const sid=String(id);
+ const s=(db.students||[]).find(x=>String(x.id)===sid);
  if(!s){alert("Scheda alunno non trovata.");return;}
- if(state.role!=="family" || !(state.user.children||[]).includes(id)){alert("Non hai accesso a questa scheda.");return;}
+ const allowed=(state.user?.children||[]).map(String);
+ if(state.role!=="family" || !allowed.includes(sid)){alert("Non hai accesso a questa scheda.");return;}
  state.familyStudent=s; state.page="familyStudent"; render();
 }
 function editFamilyChild(id){
- const s=db.students.find(x=>x.id===id);
+ const sid=String(id);
+ const s=(db.students||[]).find(x=>String(x.id)===sid);
  if(!s){alert("Scheda alunno non trovata.");return;}
- if(state.role!=="family" || !(state.user.children||[]).includes(id)){alert("Non hai accesso a questa scheda.");return;}
- state.familyStudent=s;
- state.page="familyEdit";
- render();
+ const allowed=(state.user?.children||[]).map(String);
+ if(state.role!=="family" || !allowed.includes(sid)){alert("Non hai accesso a questa scheda.");return;}
+ state.familyStudent=s; state.page="familyEdit"; render();
 }
 function renderFamilyEdit(){
  const s=state.familyStudent;
@@ -524,7 +572,7 @@ function renderFamilyEdit(){
  if(!s)return familyChildren();
  const g=(s.parents||[])[0]||{};
  const meds=(s.medications||[]);
- return `<div class="section"><button class="btn" onclick="openFamilyStudent(${s.id})">← Scheda figlio</button><h2>✏️ Aggiorna informazioni — ${s.name}</h2>
+ return `<div class="section"><button class="btn" onclick="openFamilyStudent(${JSON.stringify(String(s.id))})">← Scheda figlio</button><h2>✏️ Aggiorna informazioni — ${s.name}</h2>
  <p class="muted">Le modifiche saranno nuovamente inviate alla scuola e lo stato tornerà a “Da verificare”.</p>
  <form onsubmit="updateFamilyChild(event,${s.id})"><div class="formgrid">
   <div class="field"><label>Nome</label><input id="ef_n" value="${s.name.split(" ")[0]||""}" required></div>
