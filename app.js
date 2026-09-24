@@ -550,20 +550,42 @@ function formatEarly(items){
  const a=normList(items); if(!a.length)return "—";
  return a.map(e=>typeof e==='string'?e:`<div style="margin:6px 0"><b>${e.type||"—"}</b> · ${e.date||"—"} ${e.time||""}<br>Persona autorizzata: ${e.person||"—"}</div>`).join('');
 }
-function openFamilyStudent(id){
+async function loadFamilyStudentById(id){
+ const client=window.supabaseClient;
  const sid=String(id);
- const s=(db.students||[]).find(x=>String(x.id)===sid);
- if(!s){alert("Scheda alunno non trovata.");return;}
- const allowed=(state.user?.children||[]).map(String);
- if(state.role!=="family" || !allowed.includes(sid)){alert("Non hai accesso a questa scheda.");return;}
+ if(!client || !state.authUser) return null;
+ const {data:r,error}=await client.from("students").select("*").eq("id",sid).eq("family_user_id",state.authUser.id).single();
+ if(error || !r) return null;
+ const [delRes,earlyRes,medRes]=await Promise.all([
+   client.from("student_delegates").select("*").eq("student_id",sid),
+   client.from("early_exits").select("*").eq("student_id",sid),
+   client.from("student_medications").select("*").eq("student_id",sid)
+ ]);
+ const mapped={
+   id:r.id,_supabaseFamily:true,name:[r.first_name,r.last_name].filter(Boolean).join(" "),
+   order:"Primaria",campus:"Plesso Centrale",class:"",dob:r.date_of_birth||"",
+   parents:[{name:[state.user?.first_name,state.user?.last_name].filter(Boolean).join(" "),phone:r.parent_phone||"",email:r.parent_email||""}],
+   delegates:(delRes.data||[]).map(x=>({name:x.full_name||"",relation:x.relationship||"",document:x.document_info||"",validity:x.validity_date||""})),
+   early:(earlyRes.data||[]).map(x=>({type:x.exit_type||"Occasionale",date:x.exit_date||"",time:x.exit_time||"",person:x.authorized_person||""})),
+   allergy:r.allergies||"Nessuna",health:r.other_health_info||"",
+   med:(medRes.data||[]).length?"Sì":"No",
+   medications:(medRes.data||[]).map(x=>({name:x.medication_name||"",time:x.administration_time||"",dose:x.dose||"",method:x.method||"",school:x.administered_at_school?"Sì":"No"})),
+   mensa:r.school_canteen?"Sì":"No",homeMeal:r.home_meal?"Sì":"No",diet:r.diet||"",
+   transport:r.transport?"Sì":"No",transportNote:r.transport_notes||"",docsInfo:r.document_info||"",note:r.notes||"",
+   familySubmitted:!!r.family_submitted,verificationStatus:r.verification_status||"Da verificare"
+ };
+ return mapped;
+}
+async function openFamilyStudent(id){
+ if(state.role!=="family" || !state.authUser){alert("Sessione famiglia non disponibile.");return;}
+ const s=await loadFamilyStudentById(id);
+ if(!s){alert("Scheda alunno non trovata oppure non associata al tuo account.");return;}
  state.familyStudent=s; state.page="familyStudent"; render();
 }
-function editFamilyChild(id){
- const sid=String(id);
- const s=(db.students||[]).find(x=>String(x.id)===sid);
- if(!s){alert("Scheda alunno non trovata.");return;}
- const allowed=(state.user?.children||[]).map(String);
- if(state.role!=="family" || !allowed.includes(sid)){alert("Non hai accesso a questa scheda.");return;}
+async function editFamilyChild(id){
+ if(state.role!=="family" || !state.authUser){alert("Sessione famiglia non disponibile.");return;}
+ const s=await loadFamilyStudentById(id);
+ if(!s){alert("Scheda alunno non trovata oppure non associata al tuo account.");return;}
  state.familyStudent=s; state.page="familyEdit"; render();
 }
 function renderFamilyEdit(){
@@ -574,7 +596,7 @@ function renderFamilyEdit(){
  const meds=(s.medications||[]);
  return `<div class="section"><button class="btn" onclick="openFamilyStudent(${JSON.stringify(String(s.id))})">← Scheda figlio</button><h2>✏️ Aggiorna informazioni — ${s.name}</h2>
  <p class="muted">Le modifiche saranno nuovamente inviate alla scuola e lo stato tornerà a “Da verificare”.</p>
- <form onsubmit="updateFamilyChild(event,${s.id})"><div class="formgrid">
+ <form onsubmit="updateFamilyChild(event,${JSON.stringify(String(s.id))})"><div class="formgrid">
   <div class="field"><label>Nome</label><input id="ef_n" value="${s.name.split(" ")[0]||""}" required></div>
   <div class="field"><label>Cognome</label><input id="ef_c" value="${s.name.split(" ").slice(1).join(" ")||""}" required></div>
   <div class="field"><label>Ordine</label><select id="ef_o">${orders.map(x=>`<option ${x===s.order?"selected":""}>${x}</option>`).join("")}</select></div>
