@@ -98,8 +98,8 @@ function showRegister(){
   <p class="muted">Compila i dati. L'account viene creato direttamente in Supabase.</p>
   <form onsubmit="handleRegistration(event)">
    <div class="formgrid">
-    <div class="field"><label>Nome *</label><input id="registerFirstName" required></div>
-    <div class="field"><label>Cognome *</label><input id="registerLastName" required></div>
+    <div class="field"><label>Nome *</label><input id="registerFirstName" required oninput="updateGeneratedUsername()"></div>
+    <div class="field"><label>Cognome *</label><input id="registerLastName" required oninput="updateGeneratedUsername()"></div>
     <div class="field"><label>Email *</label><input id="registerEmail" type="email" required></div>
     <div class="field"><label>Nome utente (automatico)</label><input id="generatedUsername" readonly placeholder="es. mario.rossi"></div>
     <div class="field"><label>Tipo account *</label><select id="registerRole" onchange="toggleTeacherCode()" required><option value="family">👨‍👩‍👧 Famiglia</option><option value="teacher">👩‍🏫 Docente</option></select></div>
@@ -276,7 +276,7 @@ async function forgotPassword(area){
    if(error||!data){alert('Nome utente non trovato.');return;}
    email=data;
  }
- const {error}=await client.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin});
+ const {error}=await client.auth.resetPasswordForEmail(email,{redirectTo:"https://ic-anzio-1-portale.vercel.app/"});
  if(error){alert('Impossibile inviare il recupero password: '+error.message);return;}
  alert("Se l'indirizzo è abilitato alla ricezione delle email di Supabase, riceverai il link per reimpostare la password.");
 }
@@ -987,6 +987,30 @@ function addUser(){
  db.users.push({username,display,role,password:DEFAULT_PASSWORD,mustChange:true});
  save();render();
 }
+function resetPasswordPage(){
+ return `<div class="section"><h2>🔑 Reimposta password</h2><p class="muted">Inserisci una nuova password per il tuo account.</p>
+ <form onsubmit="completePasswordReset(event)"><div class="field"><label>Nuova password</label><input id="resetPw" type="password" minlength="8" required></div>
+ <div class="field"><label>Conferma nuova password</label><input id="resetPw2" type="password" minlength="8" required></div>
+ <br><button class="btn primary">Salva nuova password</button></form>
+ <p id="resetMsg" class="muted" style="margin-top:12px"></p></div>`;
+}
+async function completePasswordReset(e){
+ e.preventDefault();
+ const p1=document.querySelector('#resetPw').value;
+ const p2=document.querySelector('#resetPw2').value;
+ const msg=document.querySelector('#resetMsg');
+ if(p1.length<8){msg.textContent='La password deve contenere almeno 8 caratteri.';return;}
+ if(p1!==p2){msg.textContent='Le password non coincidono.';return;}
+ const client=window.supabaseClient;
+ if(!client){msg.textContent='Connessione Supabase non disponibile.';return;}
+ const {error}=await client.auth.updateUser({password:p1});
+ if(error){msg.textContent='Impossibile modificare la password: '+error.message;return;}
+ msg.textContent='Password modificata correttamente. Puoi accedere al portale.';
+ await client.auth.signOut();
+ state={role:null,page:'home',student:null,user:null,authUser:null,familyStudent:null,adminUsers:[],adminStudents:[]};
+ setTimeout(()=>render(),800);
+}
+
 function passwordPage(){
  return `<div class="section"><h2>🔐 Modifica password</h2><p class="muted">La password iniziale è stata assegnata dalla scuola. Scegline ora una personale e non condividerla.</p>
  <form onsubmit="changePassword(event)"><div class="field"><label>Password attuale</label><input id="oldPw" type="password" required></div>
@@ -1028,6 +1052,17 @@ async function logout(){
  state={role:null,page:"home",student:null,user:null,authUser:null,familyStudent:null,adminUsers:[],adminStudents:[]};
  render();
 }render();
+if(window.supabaseClient){
+ window.supabaseClient.auth.onAuthStateChange((event,session)=>{
+   if(event==='PASSWORD_RECOVERY'){
+     state.authUser=session?.user||null;
+     state.role=null;
+     state.user=null;
+     state.page='reset-password';
+     render();
+   }
+ });
+}
 restoreSession();
 document.addEventListener("click", function(ev){
   const open=ev.target.closest("[data-family-open]");
