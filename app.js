@@ -28,8 +28,17 @@ function ensureDemoUsers(){
 // ensureDemoUsers(); // v24: users are managed by Supabase Auth
 const orders=["Infanzia","Primaria","Secondaria di I grado"],campuses=["Plesso Centrale","Succursale","Quartiere Europa","Saragat"];
 function save(){localStorage.setItem(KEY,JSON.stringify(db))}
-function header(){const display=state.user?.display || [state.user?.first_name,state.user?.last_name].filter(Boolean).join(" ").trim() || state.user?.username || state.authUser?.email?.split("@")[0] || "Utente";return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V46</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${display}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
+function header(){const display=state.user?.display || [state.user?.first_name,state.user?.last_name].filter(Boolean).join(" ").trim() || state.user?.username || state.authUser?.email?.split("@")[0] || "Utente";return `<div class="top"><div class="brand"><div class="logo"><img src="assets/logo_ic_anzio_i.jpeg"></div><div><b>Istituto Comprensivo Anzio I</b><br><small>Ambiente di test operativo · V48</small></div></div>${state.role?`<div style="display:flex;align-items:center;gap:10px"><span class="muted">${display}</span><button class="btn" onclick="go('password')">🔐 Password</button><button class="btn" onclick="logout()">Esci</button></div>`:''}</div>`}
+function isPasswordRecoveryUrl(){
+  const hash=window.location.hash||"";
+  const search=window.location.search||"";
+  return /type=recovery/i.test(hash) || /type=recovery/i.test(search) || /[?&]code=/i.test(search);
+}
 function render(){
+  if(state.page==="reset-password"){
+    app.innerHTML=header()+`<div class="container"><main>${resetPasswordPage()}</main></div>`;
+    return;
+  }
   if(!state.role){app.innerHTML=header()+login();return}
   if(state.user?.must_change_password && state.page!=="password") state.page="password";
   app.innerHTML=header()+`<div class="container"><div class="layout">${side()}<main>${page()}</main></div></div><div class="footer">TEST — autenticazione Supabase. La migrazione completa di tutti i dati da localStorage a Supabase è ancora in corso.</div>`;
@@ -336,6 +345,11 @@ async function doLogin(e,area){
 async function restoreSession(){
  const client=window.supabaseClient;
  if(!client)return;
+ if(isPasswordRecoveryUrl()){
+   state={...state,role:null,user:null,page:"reset-password"};
+   render();
+   return;
+ }
  const {data}=await client.auth.getSession();
  if(!data?.session)return;
  const uid=data.session.user.id;
@@ -372,7 +386,7 @@ function side(){
    <button class="nav ${state.page==='password'?'active':''}" onclick="go('password')">🔐 Password</button>
  </aside>`;
 }
-function page(){if(state.page==='home')return home();if(state.page==='students')return students();if(state.page==='add')return add();if(state.page==='docs')return docs();if(state.page==='verification')return verification();if(state.page==='today')return today();if(state.page==='users')return users();if(state.page==='adminManagement')return adminManagement();if(state.page==='student')return student();if(state.page==='verificationDetail')return verificationDetail();if(state.page==='password')return passwordPage();if(state.page==='familyChildren')return familyChildren();if(state.page==='addFamilyChild')return addFamilyChild();if(state.page==='familyDocs')return familyDocs();if(state.page==='familyStudent')return familyStudent();if(state.page==='familyEdit')return renderFamilyEdit();return home()}
+function page(){if(state.page==='reset-password')return resetPasswordPage();if(state.page==='home')return home();if(state.page==='students')return students();if(state.page==='add')return add();if(state.page==='docs')return docs();if(state.page==='verification')return verification();if(state.page==='today')return today();if(state.page==='users')return users();if(state.page==='adminManagement')return adminManagement();if(state.page==='student')return student();if(state.page==='verificationDetail')return verificationDetail();if(state.page==='password')return passwordPage();if(state.page==='familyChildren')return familyChildren();if(state.page==='addFamilyChild')return addFamilyChild();if(state.page==='familyDocs')return familyDocs();if(state.page==='familyStudent')return familyStudent();if(state.page==='familyEdit')return renderFamilyEdit();return home()}
 function home(){
  if(state.role==="family") {
    const count=(state.user.children||[]).length;
