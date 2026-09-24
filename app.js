@@ -946,7 +946,7 @@ function adminManagement(){
  return `<div class="section"><h2>⚙️ Gestione amministrativa</h2><p class="muted">Da qui l'amministratore può visualizzare e rimuovere gli account famiglia e i relativi figli. Le eliminazioni sono definitive.</p>
  <div class="grid"><div class="card"><b>Famiglie</b><div class="metric">${families.length}</div></div><div class="card"><b>Docenti</b><div class="metric">${teachers.length}</div></div><div class="card"><b>Alunni</b><div class="metric">${childRows.length}</div></div></div></div>
  <div class="section"><h3>👨‍👩‍👧 Profili famiglia</h3>${families.length?families.map(u=>{const kids=childRows.filter(s=>s.family_user_id===u.id);return `<div class="card" style="margin:10px 0"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap"><div><b>${nameOf(u)}</b><br><span class="muted">Username: ${u.username||'—'} · ${u.active===false?'Disattivo':'Attivo'}</span><br><span class="muted">Figli associati: ${kids.length}</span>${kids.length?`<div style="margin-top:8px">${kids.map(s=>`<div style="padding:5px 0">👧 ${[s.first_name,s.last_name].filter(Boolean).join(' ')} <button class="btn" style="margin-left:8px" onclick="adminDeleteStudent('${s.id}')">🗑️ Elimina figlio</button></div>`).join('')}</div>`:''}</div><button class="btn danger" onclick="adminDeleteFamily('${u.id}','${String(nameOf(u)).replace(/'/g,"\\'")}')">🗑️ Elimina famiglia</button></div></div>`}).join(''):`<div class="card">Nessun profilo famiglia.</div>`}</div>
- <div class="section"><h3>👩‍🏫 Docenti</h3>${teachers.length?teachers.map(u=>`<div class="card" style="margin:8px 0"><b>${nameOf(u)}</b> · ${u.username||'—'} · ${u.active===false?'Disattivo':'Attivo'}</div>`).join(''):`<div class="card">Nessun docente.</div>`}</div>`;
+ <div class="section"><h3>👩‍🏫 Docenti</h3>${teachers.length?teachers.map(u=>`<div class="card" style="margin:8px 0"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap"><div><b>${nameOf(u)}</b> · ${u.username||'—'} · ${u.active===false?'Disattivo':'Attivo'}</div><button class="btn danger" onclick="adminDeleteTeacher('${u.id}','${String(nameOf(u)).replace(/'/g,"\\'")}')">🗑️ Elimina docente</button></div></div>`).join(''):`<div class="card">Nessun docente.</div>`}</div>`;
 }
 async function adminDeleteStudent(id){
  if(state.role!=='admin')return;
@@ -964,6 +964,16 @@ async function adminDeleteFamily(id,name){
  if(error){alert('Impossibile eliminare il profilo famiglia: '+error.message);return;}
  await loadAdminManagement(); await syncStaffFromSupabase(); state.page='adminManagement'; render(); alert('Profilo famiglia e dati associati eliminati.');
 }
+async function adminDeleteTeacher(id,name){
+ if(state.role!=='admin')return;
+ if(id===state.authUser?.id){alert('L’amministratore non può eliminare il proprio account.');return;}
+ if(!confirm(`Eliminare definitivamente l’account docente di ${name}? L’accesso al portale verrà revocato.`))return;
+ const client=window.supabaseClient;
+ const {error}=await client.rpc('admin_delete_teacher',{p_user_id:id});
+ if(error){alert('Impossibile eliminare il docente: '+error.message);return;}
+ await loadAdminManagement(); await syncStaffFromSupabase(); state.page='adminManagement'; render(); alert('Account docente eliminato.');
+}
+
 
 function users(){return `<div class="section"><h2>Utenti</h2><p class="muted">In questa versione di test ogni utente riceve una password iniziale comune. Al primo accesso la password deve essere cambiata e diventa personale.</p><button class="btn primary" onclick="addUser()">+ Aggiungi utente</button><div class="table" style="margin-top:16px"><div class="row head"><div>Nome utente</div><div>Nome</div><div>Ruolo</div><div>Password</div><div></div></div>${db.users.map(u=>`<div class="row"><div><b>${u.username}</b></div><div>${u.display}</div><div>${u.role}</div><div>${u.mustChange?"Iniziale":"Personale"}</div><div></div></div>`).join("")}</div></div>`}
 function addUser(){
